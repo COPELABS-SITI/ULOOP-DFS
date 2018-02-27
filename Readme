@@ -1,0 +1,18 @@
+How to run DFS?
+
+To run DFS, you must apply 911-uloop-esm path to the compat-wireless-2011-11-15. This patch will modify the mac80211 folder to include DFS in the mac.
+You must compile the Resource Manager(RM). This software is responsable to initialize DFS as a station or as a controller. This software is running in background. To run RM in background, just call:
+
+./RM
+
+The file uloop-create-aps.sh must be located in the same folder where the RM executable is. This file is used by RM to create virtual interfaces.
+
+The trust manager (TM) software is used to trigger a request of a new station. If you want to add a new station, you must use TM before connecting the station to the controller. To trigger a request, you must use the following command:
+
+./TM STA_ID TOKEN
+
+STA_ID: Check the TM source code. TM uses this ID to identify the MAC address that will be sended to the RM. You must change the MAC address defined inside the TM source code.
+
+TOKEN: This is the token value that station STA_ID has.
+
+When this command is trigger, TM will contact RM with the MAC Address and the token value. RM forwards this information to DFS, by using the netlink protocol. DFS check if there is available resources for this station. If not, DFS sends a message denying access. If there is available resources, DFS will compute a ID based on station MAC address and send a accepted message to RM. RM will create a virtual interface for the station accepted and it will forward the RM message to TM. Only when the DFS accepts the new request, the station can be connected to the controller, as this station will be assigned to the virtual interfce created by RM.

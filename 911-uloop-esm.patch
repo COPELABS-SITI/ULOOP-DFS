@@ -1,0 +1,3952 @@
+diff -rupN compat-wireless-2011-11-15-original/net/mac80211/cfg.c compat-wireless-2011-11-15/net/mac80211/cfg.c
+--- compat-wireless-2011-11-15-original/net/mac80211/cfg.c	2011-11-17 13:56:17.000000000 +0000
++++ compat-wireless-2011-11-15/net/mac80211/cfg.c	2013-07-31 14:32:30.045911215 +0100
+@@ -6,6 +6,19 @@
+  * This file is GPLv2 as found in COPYING.
+  */
+ 
++/*
++ ============================================================================
++ Name        : cfg.c (modified mac80211 code)
++ Author      : Luis Lopes (SITILABS, ULHT)
++ Version     : 4.0.0
++ Copyright   : ULOOP 2013
++ Description : mac80211 configuration hooks for cfg80211 of mac80211,
++ 	 	 	   modified to implement the Elastic Spectrum Manager (Gateway Mode),
++  	  	  	   task 3.2 / prototype version 4.0.0
++ Date		 : June 2013
++ ============================================================================
++ */
++
+ #include <linux/ieee80211.h>
+ #include <linux/nl80211.h>
+ #include <linux/rtnetlink.h>
+@@ -19,6 +32,8 @@
+ #include "cfg.h"
+ #include "rate.h"
+ #include "mesh.h"
++#include "uloop-esm.h"
++
+ 
+ static struct net_device *ieee80211_add_iface(struct wiphy *wiphy, char *name,
+ 					      enum nl80211_iftype type,
+@@ -38,6 +53,10 @@ static struct net_device *ieee80211_add_
+ 		sdata = IEEE80211_DEV_TO_SUB_IF(dev);
+ 		sdata->u.mntr_flags = *flags;
+ 	}
++	//printk(KERN_DEBUG "CALLING Function: assign_bits_to_sta\n");
++
++	if (!assign_bits_to_sta(dev, type))
++		printk (KERN_DEBUG "NO ULOOP VIF CREATED\n");
+ 
+ 	return dev;
+ }
+@@ -45,7 +64,7 @@ static struct net_device *ieee80211_add_
+ static int ieee80211_del_iface(struct wiphy *wiphy, struct net_device *dev)
+ {
+ 	ieee80211_if_remove(IEEE80211_DEV_TO_SUB_IF(dev));
+-
++	remove_bits_to_sta(dev);
+ 	return 0;
+ }
+ 
+@@ -736,6 +755,11 @@ static void ieee80211_send_layer2_update
+ 	netif_rx_ni(skb);
+ }
+ 
++void updatelayer2uloop(struct sta_info *sta)
++{
++	ieee80211_send_layer2_update(sta);
++}
++
+ static void sta_apply_parameters(struct ieee80211_local *local,
+ 				 struct sta_info *sta,
+ 				 struct station_parameters *params)
+@@ -2567,7 +2591,7 @@ static int ieee80211_probe_client(struct
+ 	bool qos;
+ 	struct ieee80211_tx_info *info;
+ 	struct sta_info *sta;
+-
++	printk(KERN_DEBUG "%s: ENTREI ieee80211_probe_client.\n", sdata->dev->name); //LUIS
+ 	rcu_read_lock();
+ 	sta = sta_info_get(sdata, peer);
+ 	if (sta) {
+diff -rupN compat-wireless-2011-11-15-original/net/mac80211/cfg.h compat-wireless-2011-11-15/net/mac80211/cfg.h
+--- compat-wireless-2011-11-15-original/net/mac80211/cfg.h	2011-11-17 13:56:17.000000000 +0000
++++ compat-wireless-2011-11-15/net/mac80211/cfg.h	2013-04-04 16:27:45.627103309 +0100
+@@ -5,5 +5,6 @@
+ #define __CFG_H
+ 
+ extern struct cfg80211_ops mac80211_config_ops;
++void updatelayer2uloop(struct sta_info *sta);
+ 
+ #endif /* __CFG_H */
+diff -rupN compat-wireless-2011-11-15-original/net/mac80211/ieee80211_i.h compat-wireless-2011-11-15/net/mac80211/ieee80211_i.h
+--- compat-wireless-2011-11-15-original/net/mac80211/ieee80211_i.h	2011-11-17 13:56:19.000000000 +0000
++++ compat-wireless-2011-11-15/net/mac80211/ieee80211_i.h	2013-10-30 15:08:24.903845155 +0000
+@@ -9,6 +9,19 @@
+  * published by the Free Software Foundation.
+  */
+ 
++/*
++ ============================================================================
++ Name        : ieee80211_i.h (modified mac80211 code)
++ Author      : Luis Lopes (SITILABS, ULHT)
++ Version     : 4.0.0
++ Copyright   : ULOOP 2013
++ Description : Modified to implement the Elastic Spectrum Manager
++ 	 	 	   (Gateway Mode and Station Mode),
++  	  	  	   task 3.2 / prototype version 4.0.0
++ Date		 : June 2013
++ ============================================================================
++ */
++
+ #ifndef IEEE80211_I_H
+ #define IEEE80211_I_H
+ 
+@@ -33,8 +46,16 @@
+ 
+ struct ieee80211_local;
+ 
++//! MAX_STA_NUMBER.
++/*!
++Maximum number of STA associated to the gateway. This is the number os queues.
++One queue to each STA.
++*/
++#define MAX_STA_NUMBER 3
++
+ /* Maximum number of broadcast/multicast frames to buffer when some of the
+  * associated stations are using power saving. */
++
+ #define AP_MAX_BC_BUFFER 128
+ 
+ /* Maximum number of frames buffered to all STAs, including multicast frames.
+@@ -150,6 +171,8 @@ struct ieee80211_tx_data {
+ 	struct ieee80211_channel *channel;
+ 
+ 	unsigned int flags;
++
++	unsigned int uloop_frame; //LUIS
+ };
+ 
+ 
+@@ -572,7 +595,24 @@ enum ieee80211_sdata_state_bits {
+ 	SDATA_STATE_OFFCHANNEL,
+ };
+ 
++struct sdata_uloop {
++	int id;
++	int bits_to_read;
++	int uloop_vif;
++	int token;
++	//uint8_t cryptoid;
++	int index;
++};
++
+ struct ieee80211_sub_if_data {
++
++	//int id; //LUIS
++	int bits_to_read; //LUIS
++	//int uloop_vif; //LUIS
++	//int token; //LUIS
++	//uint8_t cryptoid; //LUIS
++	struct sdata_uloop uloop; //LUIS
++
+ 	struct list_head list;
+ 
+ 	struct wireless_dev wdev;
+@@ -741,12 +781,109 @@ enum mac80211_scan_state {
+ 	SCAN_RESUME,
+ };
+ 
++
++struct uloop_vif {
++	int active;
++	struct ieee80211_sub_if_data *sdata;
++};
++
++//! uloop_info struct
++/*! this struct will be used for the ESM fragmentation */
++struct uloop_info {
++	int queues; /*!< Queue number for the station */
++	int pos_frame; /*!< position in the frame payload already fragmented  */
++	int rem_frame; /*!< payload remaining to be fragmented */
++	int token;
++	int cryptoid;
++	struct net_device *dev; /*!< info about the device */
++	int id;
++	struct uloop_vif vif;
++	int index;
++	u8 macAddress[ETH_ALEN];
++};
++
++//! uloop_open struct
++/*! this struct will be used to store the info about the vif uloop_open. */
++struct uloop_open {
++	struct net_device *dev; /*!< info about the device */
++	int vif_enable;
++};
++
+ struct ieee80211_local {
+ 	/* embed the driver visible part.
+ 	 * don't cast (use the static inlines below), but we keep
+ 	 * it first anyway so they become a no-op */
+ 	struct ieee80211_hw hw;
+ 
++	//! uloop_skb_queues
++	/*!
++	List of ESM queues
++	*/
++	struct sk_buff_head uloop_skb_queue[MAX_STA_NUMBER]; // LUIS
++
++	//! uloop_mac_addr
++	/*!
++	real mac address of the device
++	*/
++	u8 uloop_mac_addr[ETH_ALEN];//LUIS
++
++	//! spectrum_slot.
++	/*!
++	Number of free slot
++	*/
++	int spectrum_slot; // LUIS
++
++	//! uloop
++	/*!
++	Contains all the information necessary for ESM
++	*/
++	struct uloop_info uloop[MAX_STA_NUMBER]; //LUIS
++
++	//struct uloop_vif uloopvif[MAX_STA_NUMBER]; //LUIS
++
++	//! addrDest (station mode)
++	/*!
++	Contains the original destination address to create the original frame. (station mode)
++	*/
++	u8	addrDest[6];
++
++	//! addrSrc (station mode)
++	/*!
++	Contains the original source address to create the original frame. (station mode)
++	*/
++	u8	addrSrc[6];
++
++	//! seq_n
++	/*!
++	Contains the sequence number of the SF to control propose. (station mode)
++	*/
++	int seq_n;
++
++	//! ESM_working_mode
++	/*!
++	The operation mode for the ESM in the device (Gateway, Station, Off)
++	*/
++	int ESM_working_mode;
++
++	//! uloop_open_vif
++	/*!
++	Info about the uloop_open network.
++	 */
++	struct uloop_open uloop_open_vif;
++
++	//! uloop_vif_number
++	/*!
++	Number of virtual interfaces created for uloop.
++	 */
++	int uloop_vif_number;
++
++	//! uloop_id_sta;
++	/*!
++	ID computed based on the cryptoid of this station (Used only on Station mode for the
++	defragmentation of a Superframe).
++	 */
++	int uloop_id_sta;
++
+ 	const struct ieee80211_ops *ops;
+ 
+ 	/*
+@@ -863,6 +1000,12 @@ struct ieee80211_local {
+ 	struct sk_buff_head pending[IEEE80211_MAX_QUEUES];
+ 	struct tasklet_struct tx_pending_tasklet;
+ 
++	//! tx_pending_uloop_tasklet
++	/*!
++	Scheduled only if the ESM queues are not empty.
++	*/
++	struct tasklet_struct tx_pending_uloop_tasklet; //LUIS
++
+ 	atomic_t agg_queue_stop[IEEE80211_MAX_QUEUES];
+ 
+ 	/* number of interfaces with corresponding IFF_ flags */
+diff -rupN compat-wireless-2011-11-15-original/net/mac80211/iface.c compat-wireless-2011-11-15/net/mac80211/iface.c
+--- compat-wireless-2011-11-15-original/net/mac80211/iface.c	2011-11-17 13:56:19.000000000 +0000
++++ compat-wireless-2011-11-15/net/mac80211/iface.c	2013-07-31 14:53:21.836488101 +0100
+@@ -10,6 +10,19 @@
+  * it under the terms of the GNU General Public License version 2 as
+  * published by the Free Software Foundation.
+  */
++
++/*
++ ============================================================================
++ Name        : iface.c (modified mac80211 code)
++ Author      : Luis Lopes (SITILABS, ULHT)
++ Version     : 4.0.0
++ Copyright   : ULOOP 2013
++ Description : Interface handling (except master interface) for mac80211,
++ 	 	 	   modified to implement the Elastic Spectrum Manager (Gateway Mode),
++  	  	  	   task 3.2 / prototype version 4.0.0
++ Date		 : June 2013
++ ============================================================================
++ */
+ #include <linux/slab.h>
+ #include <linux/kernel.h>
+ #include <linux/if_arp.h>
+@@ -25,6 +38,7 @@
+ #include "driver-ops.h"
+ #include "wme.h"
+ #include "rate.h"
++#include "uloop-esm.h" //LUIS
+ 
+ /**
+  * DOC: Interface list locking
+@@ -661,6 +675,10 @@ static void ieee80211_teardown_sdata(str
+ static u16 ieee80211_netdev_select_queue(struct net_device *dev,
+ 					 struct sk_buff *skb)
+ {
++	int msg_debug = 0; // LUIS
++
++	if (msg_debug)
++		printk(KERN_DEBUG "%s: ENTREI IEEE80211_netdev_select_queue->SELEC_QUEUE\n", dev->name);
+ 	return ieee80211_select_queue(IEEE80211_DEV_TO_SUB_IF(dev), skb);
+ }
+ 
+@@ -668,7 +686,7 @@ static const struct net_device_ops ieee8
+ 	.ndo_open		= ieee80211_open,
+ 	.ndo_stop		= ieee80211_stop,
+ 	.ndo_uninit		= ieee80211_teardown_sdata,
+-	.ndo_start_xmit		= ieee80211_subif_start_xmit,
++	.ndo_start_xmit		= esm_get_frame, //ieee80211_subif_start_xmit,
+ 	.ndo_set_rx_mode	= ieee80211_set_multicast_list,
+ 	.ndo_change_mtu 	= ieee80211_change_mtu,
+ 	.ndo_set_mac_address 	= ieee80211_change_mac,
+@@ -883,7 +901,6 @@ static void ieee80211_setup_sdata(struct
+ 
+ 	/* only monitor differs */
+ 	sdata->dev->type = ARPHRD_ETHER;
+-
+ 	skb_queue_head_init(&sdata->skb_queue);
+ 	INIT_WORK(&sdata->work, ieee80211_iface_work);
+ 
+@@ -1195,6 +1212,8 @@ int ieee80211_if_add(struct ieee80211_lo
+ 	sdata->wdev.wiphy = local->hw.wiphy;
+ 	sdata->local = local;
+ 	sdata->dev = ndev;
++
++
+ #ifdef CONFIG_INET
+ 	sdata->arp_filter_state = true;
+ #endif
+diff -rupN compat-wireless-2011-11-15-original/net/mac80211/main.c compat-wireless-2011-11-15/net/mac80211/main.c
+--- compat-wireless-2011-11-15-original/net/mac80211/main.c	2011-11-17 13:56:19.000000000 +0000
++++ compat-wireless-2011-11-15/net/mac80211/main.c	2013-10-30 16:37:06.423685488 +0000
+@@ -8,6 +8,19 @@
+  * published by the Free Software Foundation.
+  */
+ 
++/*
++ ============================================================================
++ Name        : main.c (modified mac80211 code)
++ Author      : Luis Lopes (SITILABS, ULHT)
++ Version     : 4.0.0
++ Copyright   : ULOOP 2013
++ Description : mac80211 modified to implement the Elastic
++ 	 	 	   Spectrum Manager (Gateway Mode),
++  	  	  	   task 3.2 / prototype version 4.0.0
++ Date		 : June 2013
++ ============================================================================
++ */
++
+ #include <net/mac80211.h>
+ #include <linux/module.h>
+ #include <linux/init.h>
+@@ -32,8 +45,11 @@
+ #include "led.h"
+ #include "cfg.h"
+ #include "debugfs.h"
++#include "uloop-esm.h"
++#include "timer.h"
+ 
+ static struct lock_class_key ieee80211_rx_skb_queue_class;
++static int esmAlreadyInit = 0;
+ 
+ void ieee80211_configure_filter(struct ieee80211_local *local)
+ {
+@@ -576,7 +592,7 @@ struct ieee80211_hw *ieee80211_alloc_hw(
+ 	 * In memory it'll be like this:
+ 	 *
+ 	 * +-------------------------+
+-	 * | struct wiphy	    |
++	 * | struct wiphy	    	 |
+ 	 * +-------------------------+
+ 	 * | struct ieee80211_local  |
+ 	 * +-------------------------+
+@@ -634,6 +650,32 @@ struct ieee80211_hw *ieee80211_alloc_hw(
+ 	local->uapsd_queues = IEEE80211_DEFAULT_UAPSD_QUEUES;
+ 	local->uapsd_max_sp_len = IEEE80211_DEFAULT_MAX_SP_LEN;
+ 
++	if (!esmAlreadyInit) {
++		esmAlreadyInit = 1;
++		printk(KERN_DEBUG "INICIALIZAR ULOOP_SKB_QUEUE\n"); //LUIS
++		for (i = 0; i < MAX_STA_NUMBER; i++) {
++			skb_queue_head_init(&local->uloop_skb_queue[i]); //LUIS
++			local->uloop[i].queues = 0;
++			local->uloop[i].pos_frame = 0;
++			local->uloop[i].rem_frame = 0;
++			local->uloop[i].token = 0;
++			local->uloop[i].cryptoid = 0;
++			local->uloop[i].id = -1;
++			local->uloop[i].vif.active = 0;
++			local->uloop[i].index = -1;
++		}
++		local->spectrum_slot = TOTALBITS * 1000; //LUIS (48 bits)
++		init_ESM_variables();
++		//timer_init(); //ULOOP ACK TIMER INIT.
++		init_netlink(); //ULOOP NETLINK SOCKET INIT
++		local->uloop_open_vif.vif_enable = 0;
++		local->uloop_vif_number = 0;
++
++		//Station ID used for the defragmentation of a Superframe.
++		local->uloop_id_sta = -1;
++	}
++
++
+ 	INIT_LIST_HEAD(&local->interfaces);
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,35))
+ 
+@@ -691,6 +733,9 @@ struct ieee80211_hw *ieee80211_alloc_hw(
+ 	tasklet_init(&local->tx_pending_tasklet, ieee80211_tx_pending,
+ 		     (unsigned long)local);
+ 
++	tasklet_init(&local->tx_pending_uloop_tasklet, make_uloop_temp_frame,
++			     (unsigned long)local); //LUIS
++
+ 	tasklet_init(&local->tasklet,
+ 		     ieee80211_tasklet_handler,
+ 		     (unsigned long) local);
+@@ -698,6 +743,8 @@ struct ieee80211_hw *ieee80211_alloc_hw(
+ 	skb_queue_head_init(&local->skb_queue);
+ 	skb_queue_head_init(&local->skb_queue_unreliable);
+ 
++
++
+ 	/* init dummy netdev for use w/ NAPI */
+ 	init_dummy_netdev(&local->napi_dev);
+ 
+@@ -1009,6 +1056,8 @@ void ieee80211_unregister_hw(struct ieee
+ {
+ 	struct ieee80211_local *local = hw_to_local(hw);
+ 
++	tasklet_kill(&local->tx_pending_uloop_tasklet); //LUIS
++
+ 	tasklet_kill(&local->tx_pending_tasklet);
+ 	tasklet_kill(&local->tasklet);
+ 
+diff -rupN compat-wireless-2011-11-15-original/net/mac80211/Makefile compat-wireless-2011-11-15/net/mac80211/Makefile
+--- compat-wireless-2011-11-15-original/net/mac80211/Makefile	2011-11-17 13:56:17.000000000 +0000
++++ compat-wireless-2011-11-15/net/mac80211/Makefile	2013-07-16 11:30:01.991273695 +0100
+@@ -19,12 +19,15 @@ mac80211-y := \
+ 	cfg.o \
+ 	rx.o \
+ 	spectmgmt.o \
++	uloop-esm.o \
++	uloop-esm-rx.o \
++	timer.o \
+ 	tx.o \
+ 	key.o \
+ 	util.o \
+ 	wme.o \
+ 	event.o \
+-	chan.o
++	chan.o 
+ 
+ mac80211-$(CONFIG_MAC80211_LEDS) += led.o
+ mac80211-$(CONFIG_MAC80211_DEBUGFS) += \
+diff -rupN compat-wireless-2011-11-15-original/net/mac80211/mlme.c compat-wireless-2011-11-15/net/mac80211/mlme.c
+--- compat-wireless-2011-11-15-original/net/mac80211/mlme.c	2011-11-17 13:56:17.000000000 +0000
++++ compat-wireless-2011-11-15/net/mac80211/mlme.c	2012-10-08 18:03:36.000000000 +0100
+@@ -1061,6 +1061,7 @@ static void ieee80211_set_associated(str
+ 
+ 	netif_tx_start_all_queues(sdata->dev);
+ 	netif_carrier_on(sdata->dev);
++
+ }
+ 
+ static void ieee80211_set_disassoc(struct ieee80211_sub_if_data *sdata,
+@@ -2515,6 +2516,7 @@ static int ieee80211_pre_assoc(struct ie
+ 
+ 	err = sta_info_insert(sta);
+ 	sta = NULL;
++
+ 	if (err) {
+ 		printk(KERN_DEBUG "%s: failed to insert Dummy STA entry for"
+ 		       " the AP (error %d)\n", sdata->name, err);
+diff -rupN compat-wireless-2011-11-15-original/net/mac80211/rx.c compat-wireless-2011-11-15/net/mac80211/rx.c
+--- compat-wireless-2011-11-15-original/net/mac80211/rx.c	2011-11-17 13:56:19.000000000 +0000
++++ compat-wireless-2011-11-15/net/mac80211/rx.c	2013-10-30 13:42:37.267041634 +0000
+@@ -9,6 +9,20 @@
+  * published by the Free Software Foundation.
+  */
+ 
++/*
++ ============================================================================
++ Name        : rx.c (modified mac80211 code)
++ Author      : Luis Lopes (SITILABS, ULHT)
++ Version     : 4.0.0
++ Copyright   : ULOOP 2013
++ Description : Receive functions for mac80211,
++ 	 	 	   modified to implement the Elastic Spectrum Manager
++ 	 	 	   (Gateway Mode and Station Mode)
++  	  	  	   task 3.2 / prototype version 4.0.0
++ Date		 : June 2013
++ ============================================================================
++ */
++
+ #include <linux/jiffies.h>
+ #include <linux/slab.h>
+ #include <linux/kernel.h>
+@@ -28,6 +42,12 @@
+ #include "wpa.h"
+ #include "tkip.h"
+ #include "wme.h"
++#include "uloop-esm-rx.h"
++#include "uloop-esm.h"
++#include "cfg.h"
++
++#define MAC2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5] //LUIS
++#define MACSTR "%02x:%02x:%02x:%02x:%02x:%02x" // LUIS
+ 
+ /*
+  * monitor mode reception
+@@ -1759,6 +1779,11 @@ ieee80211_deliver_skb(struct ieee80211_r
+ 	struct sta_info *dsta;
+ 	struct ieee80211_rx_status *status = IEEE80211_SKB_RXCB(rx->skb);
+ 
++//#define MAC2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5] //LUIS
++//#define MACSTR "%02x:%02x:%02x:%02x:%02x:%02x"//LUIS
++	//printk(KERN_DEBUG "DEST KERNEL: addr = " MACSTR "\n", MAC2STR(ehdr->h_dest)); //LUIS
++	//printk(KERN_DEBUG "SRC KERNEL: addr = " MACSTR "\n", MAC2STR(ehdr->h_source)); //LUIS
++
+ 	skb = rx->skb;
+ 	xmit_skb = NULL;
+ 
+@@ -2093,15 +2118,23 @@ ieee80211_rx_h_ctrl(struct ieee80211_rx_
+ 	struct tid_ampdu_rx *tid_agg_rx;
+ 	u16 start_seq_num;
+ 	u16 tid;
++	int msg_debug = 0; //LUIS
++
++	if (msg_debug)
++				printk(KERN_DEBUG "FUNCTION: ieee80211_rx_h_ctrl ------------------\n"); //LUIS
+ 
+-	if (likely(!ieee80211_is_ctl(bar->frame_control)))
++	if (likely(!ieee80211_is_ctl(bar->frame_control))) {
++		if (msg_debug)
++					printk(KERN_DEBUG "No Control frame. ------------------\n"); //LUIS
+ 		return RX_CONTINUE;
++	}
+ 
+ 	if (ieee80211_is_back_req(bar->frame_control)) {
+ 		struct {
+ 			__le16 control, start_seq_num;
+ 		} __packed bar_data;
+-
++		if (msg_debug)
++			printk(KERN_DEBUG "FUNCTION: ieee80211_is_back_req ------------------\n"); //LUIS
+ 		if (!rx->sta)
+ 			return RX_DROP_MONITOR;
+ 
+@@ -2128,9 +2161,12 @@ ieee80211_rx_h_ctrl(struct ieee80211_rx_
+ 		spin_unlock(&tid_agg_rx->reorder_lock);
+ 
+ 		kfree_skb(skb);
++		if (msg_debug)
++			printk(KERN_DEBUG "FUNCTION: ieee80211_is_back_req end ------------------\n"); //LUIS
+ 		return RX_QUEUED;
+ 	}
+-
++	if (msg_debug)
++		printk(KERN_DEBUG "FUNCTION: ieee80211_rx_h_ctrl end ------------------\n"); //LUIS
+ 	/*
+ 	 * After this point, we only want management frames,
+ 	 * so we can drop all remaining control frames to
+@@ -2922,7 +2958,6 @@ static void __ieee80211_rx_handle_packet
+ 				prev_sta = sta;
+ 				continue;
+ 			}
+-
+ 			rx.sta = prev_sta;
+ 			rx.sdata = prev_sta->sdata;
+ 			ieee80211_prepare_and_rx_handle(&rx, skb, false);
+@@ -2931,9 +2966,36 @@ static void __ieee80211_rx_handle_packet
+ 		}
+ 
+ 		if (prev_sta) {
+-			rx.sta = prev_sta;
+-			rx.sdata = prev_sta->sdata;
+ 
++			/*
++			 * ULOOP: Redirect the frame received to the correct vif.
++			 * Only if the ESM is working as a Gateway.
++			*/
++
++			//if (local->uloop[1].vif.active != 0 && ESM_working_mode == ESM_GATEWAY_MODE) {
++			if (local->uloop_vif_number != 0 && ESM_working_mode == ESM_GATEWAY_MODE) {
++
++				//Search the Uloop-VIF assigned to the station indicated on Source Address
++				int index = find_vif_assigned_to_sta(local, hdr->addr2);
++
++				if (index != -1) {
++
++					//Uloop-VIF found. Change the destination address to the MAC of the Uloop-VIF.
++					rx.sta = prev_sta;
++					rx.sdata = local->uloop[index].vif.sdata;
++					memcpy(hdr->addr1, local->uloop[index].vif.sdata->vif.addr, ETH_ALEN);
++				} else {
++
++					// Destination Uloop-VIF not found.
++					rx.sta = prev_sta;
++					rx.sdata = prev_sta->sdata;
++				}
++			}
++			else //Non ULOOP or ESM Station Mode
++			{
++				rx.sta = prev_sta;
++				rx.sdata = prev_sta->sdata;
++			}
+ 			if (ieee80211_prepare_and_rx_handle(&rx, skb, true))
+ 				return;
+ 			goto out;
+@@ -2972,6 +3034,17 @@ static void __ieee80211_rx_handle_packet
+ 		rx.sta = sta_info_get_bss_rx(prev, hdr->addr2);
+ 		rx.sdata = prev;
+ 
++		//if (local->uloop[1].vif.active != 0 && ESM_working_mode == ESM_GATEWAY_MODE) {//LUIS
++		if (local->uloop_vif_number != 0 && ESM_working_mode == ESM_GATEWAY_MODE) {
++
++			//Search the Uloop-VIF assigned to the station indicated on Source Address
++			int index = find_vif_assigned_to_sta(local, hdr->addr2);
++
++			//If Uloop-VIF found, put the VIF as the receiver of the frame.
++			if (index != -1)
++				rx.sdata = local->uloop[index].vif.sdata;
++		}
++
+ 		if (ieee80211_prepare_and_rx_handle(&rx, skb, true))
+ 			return;
+ 	}
+@@ -2990,9 +3063,20 @@ void ieee80211_rx(struct ieee80211_hw *h
+ 	struct ieee80211_rate *rate = NULL;
+ 	struct ieee80211_supported_band *sband;
+ 	struct ieee80211_rx_status *status = IEEE80211_SKB_RXCB(skb);
++	struct ieee80211_hdr *hdr; //LUIS
++
++	#define MAC2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5] //LUIS
++	#define MACSTR "%02x:%02x:%02x:%02x:%02x:%02x" //LUIS
++
++	hdr = (struct ieee80211_hdr *)skb->data; //LUIS
+ 
+ 	WARN_ON_ONCE(softirq_count() == 0);
+ 
++/* ULOOP ACK STUFF
++	if (uloop_is_ack_sf(hdr->frame_control))
++		received_ACK_sf(skb);
++*/
++
+ 	if (WARN_ON(status->band < 0 ||
+ 		    status->band >= IEEE80211_NUM_BANDS))
+ 		goto drop;
+@@ -3072,6 +3156,24 @@ void ieee80211_rx(struct ieee80211_hw *h
+ 		return;
+ 	}
+ 
++	/* ******************* ULOOP STATION MODE *******************
++	 * If the station mode is enabled, then the function defrag_sf_uloop is called
++	 * to defragment the Superframes received.
++	 */
++
++	if (ESM_working_mode == ESM_STATION_MODE) {
++
++		// This is the if condition to call our function (if it's a superframe the function will be called).
++		if (uloop_is_sf(hdr->frame_control)) {
++			printk(KERN_DEBUG "\n\n\n---***************Superframe frame: Calling the function read_superframe_fragments*********---\n");
++			read_superframe_fragments(local ,skb);
++			skb = defrag_sf_uloop(local, skb);
++			if(!skb)
++				goto drop;
++			printk(KERN_DEBUG "The skb passed is %d\n", skb->len);
++		}
++	}
++	/* ********************************************************* */
+ 	ieee80211_tpt_led_trig_rx(local,
+ 			((struct ieee80211_hdr *)skb->data)->frame_control,
+ 			skb->len);
+@@ -3095,9 +3197,45 @@ EXPORT_SYMBOL(mac80211_ieee80211_rx);
+ void ieee80211_rx_irqsafe(struct ieee80211_hw *hw, struct sk_buff *skb)
+ {
+ 	struct ieee80211_local *local = hw_to_local(hw);
++	int msg_debug = 1; //LUIS
++	#define MAC2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5] //LUIS
++	#define MACSTR "%02x:%02x:%02x:%02x:%02x:%02x" //LUIS
++	struct ieee80211_hdr *hdr; //LUIS
+ 
+ 	BUILD_BUG_ON(sizeof(struct ieee80211_rx_status) > sizeof(skb->cb));
+ 
++	hdr = (struct ieee80211_hdr *)skb->data; //LUIS
++
++	if (msg_debug) {
++		printk(KERN_DEBUG " ieee80211_rx_irqsafe FUNCTION.---------------------------------\n"); //LUIS
++		printk(KERN_DEBUG "CONTROL?: %d \n", ieee80211_is_ctl(hdr->frame_control));
++		printk(KERN_DEBUG "ACK?: %d \n", ieee80211_is_ack(hdr->frame_control));
++		printk(KERN_DEBUG "RTS?: %d \n", ieee80211_is_rts(hdr->frame_control));
++		printk(KERN_DEBUG "CTS?: %d \n", ieee80211_is_cts(hdr->frame_control));
++		printk(KERN_DEBUG "CFEND?: %d \n", ieee80211_is_cfend(hdr->frame_control));
++		printk(KERN_DEBUG "CFENDACK?: %d \n", ieee80211_is_cfendack(hdr->frame_control));
++		printk(KERN_DEBUG "NULLFUNC?: %d \n", ieee80211_is_nullfunc(hdr->frame_control));
++		printk(KERN_DEBUG "QOS_NULLFUNC?: %d \n", ieee80211_is_qos_nullfunc(hdr->frame_control));
++		printk(KERN_DEBUG "DATA?: %d \n", ieee80211_is_data(hdr->frame_control));
++		printk(KERN_DEBUG "MNG?: %d \n", ieee80211_is_mgmt(hdr->frame_control));
++		printk(KERN_DEBUG "ASSOC_REQ?: %d \n", ieee80211_is_assoc_req(hdr->frame_control));
++		printk(KERN_DEBUG "ASSOC_RESP?: %d \n", ieee80211_is_assoc_resp(hdr->frame_control));
++		printk(KERN_DEBUG "PROBE_REQ?: %d \n",ieee80211_is_probe_req(hdr->frame_control));
++		printk(KERN_DEBUG "PROBE_RESP?: %d \n",ieee80211_is_probe_resp(hdr->frame_control));
++		printk(KERN_DEBUG "DISASSOC_RESP?: %d \n", ieee80211_is_disassoc(hdr->frame_control));
++		printk(KERN_DEBUG "BEACON?: %d \n", ieee80211_is_beacon(hdr->frame_control));
++		printk(KERN_DEBUG "ATIM?: %d \n", ieee80211_is_atim(hdr->frame_control));
++		printk(KERN_DEBUG "AUTH?: %d \n", ieee80211_is_auth(hdr->frame_control));
++		printk(KERN_DEBUG "DEAUTH?: %d \n", ieee80211_is_deauth(hdr->frame_control));
++		printk(KERN_DEBUG "ACTION?: %d \n", ieee80211_is_action(hdr->frame_control));
++		printk(KERN_DEBUG "TO DS: %d \n", ieee80211_has_tods(hdr->frame_control));
++		printk(KERN_DEBUG "FROM DS: %d \n", ieee80211_has_fromds(hdr->frame_control));
++		printk(KERN_DEBUG "Frame ADRR1 Frame para: " MACSTR "\n", MAC2STR(hdr->addr1));
++		printk(KERN_DEBUG "Frame ADRR2 Frame de: " MACSTR "\n", MAC2STR(hdr->addr2));
++		printk(KERN_DEBUG "Frame ADRR3 Frame de: " MACSTR "\n", MAC2STR(hdr->addr3));
++		printk(KERN_DEBUG "Frame ADRR4 Frame de: " MACSTR "\n", MAC2STR(hdr->addr4));
++	}
++
+ 	skb->pkt_type = IEEE80211_RX_MSG;
+ 	skb_queue_tail(&local->skb_queue, skb);
+ 	tasklet_schedule(&local->tasklet);
+diff -rupN compat-wireless-2011-11-15-original/net/mac80211/sta_info.c compat-wireless-2011-11-15/net/mac80211/sta_info.c
+--- compat-wireless-2011-11-15-original/net/mac80211/sta_info.c	2011-11-17 13:56:17.000000000 +0000
++++ compat-wireless-2011-11-15/net/mac80211/sta_info.c	2013-06-14 15:56:08.002002485 +0100
+@@ -62,6 +62,9 @@
+  * freed before they are done using it.
+  */
+ 
++#define MAC2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5]
++#define MACSTR "%02x:%02x:%02x:%02x:%02x:%02x"
++
+ /* Caller must hold local->sta_lock */
+ static int sta_info_hash_del(struct ieee80211_local *local,
+ 			     struct sta_info *sta)
+@@ -341,6 +344,7 @@ struct sta_info *sta_info_alloc(struct i
+ static int sta_info_finish_insert(struct sta_info *sta,
+ 				bool async, bool dummy_reinsert)
+ {
++
+ 	struct ieee80211_local *local = sta->local;
+ 	struct ieee80211_sub_if_data *sdata = sta->sdata;
+ 	struct station_info sinfo;
+@@ -1179,6 +1183,7 @@ static void ieee80211_send_null_response
+ 	bool qos = test_sta_flag(sta, WLAN_STA_WME);
+ 	struct ieee80211_tx_info *info;
+ 
++	printk(KERN_DEBUG "%s: ENTREI ieee80211_send_null_response.\n", sdata->dev->name); //LUIS
+ 	if (qos) {
+ 		fc = cpu_to_le16(IEEE80211_FTYPE_DATA |
+ 				 IEEE80211_STYPE_QOS_NULLFUNC |
+diff -rupN compat-wireless-2011-11-15-original/net/mac80211/status.c compat-wireless-2011-11-15/net/mac80211/status.c
+--- compat-wireless-2011-11-15-original/net/mac80211/status.c	2011-11-17 13:56:17.000000000 +0000
++++ compat-wireless-2011-11-15/net/mac80211/status.c	2013-04-22 12:59:28.897156231 +0100
+@@ -16,7 +16,10 @@
+ #include "mesh.h"
+ #include "led.h"
+ #include "wme.h"
++#include "uloop-esm.h"
+ 
++#define MAC2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5]
++#define MACSTR "%02x:%02x:%02x:%02x:%02x:%02x"
+ 
+ void ieee80211_tx_status_irqsafe(struct ieee80211_hw *hw,
+ 				 struct sk_buff *skb)
+@@ -336,6 +339,7 @@ static void ieee80211_add_tx_radiotap_he
+ 
+ void ieee80211_tx_status(struct ieee80211_hw *hw, struct sk_buff *skb)
+ {
++
+ 	struct sk_buff *skb2;
+ 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *) skb->data;
+ 	struct ieee80211_local *local = hw_to_local(hw);
+@@ -353,6 +357,11 @@ void ieee80211_tx_status(struct ieee8021
+ 	struct ieee80211_bar *bar;
+ 	u16 tid;
+ 	int rtap_len;
++	int stas; //LUIS
++	int msg_debug = 0; //LUIS
++
++	if (msg_debug)
++		printk(KERN_DEBUG "FUNCTION: __IEEE80211_tx_status ------------------\n"); //LUIS
+ 
+ 	for (i = 0; i < IEEE80211_TX_MAX_RATES; i++) {
+ 		if (info->status.rates[i].idx < 0) {
+@@ -378,13 +387,17 @@ void ieee80211_tx_status(struct ieee8021
+ 
+ 	for_each_sta_info(local, hdr->addr1, sta, tmp) {
+ 		/* skip wrong virtual interface */
+-		if (memcmp(hdr->addr2, sta->sdata->vif.addr, ETH_ALEN))
++		if (memcmp(hdr->addr2, sta->sdata->vif.addr, ETH_ALEN)){
++			if (msg_debug)
++				printk(KERN_DEBUG " Skip wrong virtual interface.\n"); //LUIS
+ 			continue;
++		}
+ 
+ 		if (info->flags & IEEE80211_TX_STATUS_EOSP)
+ 			clear_sta_flag(sta, WLAN_STA_SP);
+ 
+ 		acked = !!(info->flags & IEEE80211_TX_STAT_ACK);
++
+ 		if (!acked && test_sta_flag(sta, WLAN_STA_PS_STA)) {
+ 			/*
+ 			 * The STA is in power save mode, so assume
+@@ -479,16 +492,69 @@ void ieee80211_tx_status(struct ieee8021
+ 
+ 	frag = le16_to_cpu(hdr->seq_ctrl) & IEEE80211_SCTL_FRAG;
+ 	type = le16_to_cpu(hdr->frame_control) & IEEE80211_FCTL_FTYPE;
++	//printk(KERN_DEBUG "ACK ADRR1 Frame para: " MACSTR "\n", MAC2STR(hdr->addr1));//LUIS
++	//printk(KERN_DEBUG "ACK ADRR3 Frame para: " MACSTR "\n", MAC2STR(hdr->addr3));//LUIS
++	//printk(KERN_DEBUG " ACKED\n");printk(KERN_DEBUG "TO DS: %d \n", type2);
+ 
+ 	if (info->flags & IEEE80211_TX_STAT_ACK) {
++		//printk(KERN_DEBUG " ACKED\n"); //LUIS
+ 		if (frag == 0) {
++			if (msg_debug) {
++				printk(KERN_DEBUG " ACKED FIRST FRAGMENT.\n"); //LUIS
++				printk(KERN_DEBUG "CONTROL?: %d \n", ieee80211_is_ctl(hdr->frame_control));
++				printk(KERN_DEBUG "ACK?: %d \n", ieee80211_is_ack(hdr->frame_control));
++				printk(KERN_DEBUG "RTS?: %d \n", ieee80211_is_rts(hdr->frame_control));
++				printk(KERN_DEBUG "CTS?: %d \n", ieee80211_is_cts(hdr->frame_control));
++				printk(KERN_DEBUG "DATA?: %d \n", ieee80211_is_data(hdr->frame_control));
++				printk(KERN_DEBUG "MNG?: %d \n", ieee80211_is_mgmt(hdr->frame_control));
++				printk(KERN_DEBUG "ASSOC_REQ?: %d \n", ieee80211_is_assoc_req(hdr->frame_control));
++				printk(KERN_DEBUG "ASSOC_RESP?: %d \n", ieee80211_is_assoc_resp(hdr->frame_control));
++				printk(KERN_DEBUG "PROBE_REQ?: %d \n",ieee80211_is_probe_req(hdr->frame_control));
++				printk(KERN_DEBUG "PROBE_RESP?: %d \n",ieee80211_is_probe_resp(hdr->frame_control));
++				printk(KERN_DEBUG "DISASSOC_RESP?: %d \n", ieee80211_is_disassoc(hdr->frame_control));
++				printk(KERN_DEBUG "BEACON?: %d \n", ieee80211_is_beacon(hdr->frame_control));
++				printk(KERN_DEBUG "ATIM?: %d \n", ieee80211_is_atim(hdr->frame_control));
++				printk(KERN_DEBUG "AUTH?: %d \n", ieee80211_is_auth(hdr->frame_control));
++				printk(KERN_DEBUG "DEAUTH?: %d \n", ieee80211_is_deauth(hdr->frame_control));
++				printk(KERN_DEBUG "ACTION?: %d \n", ieee80211_is_action(hdr->frame_control));
++				printk(KERN_DEBUG "TO DS: %d \n", ieee80211_has_tods(hdr->frame_control));
++				printk(KERN_DEBUG "FROM DS: %d \n", ieee80211_has_fromds(hdr->frame_control));
++				printk(KERN_DEBUG "Frame ADRR1 Frame para: " MACSTR "\n", MAC2STR(hdr->addr1));
++				printk(KERN_DEBUG "Frame ADRR2 Frame de: " MACSTR "\n", MAC2STR(hdr->addr2));
++				printk(KERN_DEBUG "Frame ADRR3 Frame de: " MACSTR "\n", MAC2STR(hdr->addr3));
++				printk(KERN_DEBUG "Frame ADRR4 Frame de: " MACSTR "\n", MAC2STR(hdr->addr4));
++			}
++			if (uloop_is_sf(hdr->frame_control)) {
++				if (msg_debug) {
++					for (stas=0; stas < MAX_STA_NUMBER; stas++) {
++
++							if ( !skb_queue_empty(&local->uloop_skb_queue[stas])){
++								printk(KERN_DEBUG " Frame transmitted - removed from queues.\n"); //LUIS
++								//dev_kfree_skb(skb_dequeue(&local->uloop_skb_queue[stas]));
++							}
++					}
++				}
++			}
++
+ 			local->dot11TransmittedFrameCount++;
+ 			if (is_multicast_ether_addr(hdr->addr1))
++			{
+ 				local->dot11MulticastTransmittedFrameCount++;
++				if (msg_debug)
++					printk(KERN_DEBUG "dot11MulticastTransmittedFrameCount: %d\n", local->dot11MulticastTransmittedFrameCount);
++			}
+ 			if (retry_count > 0)
++			{
+ 				local->dot11RetryCount++;
++				if (msg_debug)
++					printk(KERN_DEBUG "dot11RetryCount: %d\n", local->dot11RetryCount);
++			}
+ 			if (retry_count > 1)
++			{
+ 				local->dot11MultipleRetryCount++;
++				if (msg_debug)
++					printk(KERN_DEBUG "dot11MultipleRetryCount: %d\n", local->dot11MultipleRetryCount);
++			}
+ 		}
+ 
+ 		/* This counter shall be incremented for an acknowledged MPDU
+@@ -500,8 +566,11 @@ void ieee80211_tx_status(struct ieee8021
+ 		    type == IEEE80211_FTYPE_MGMT)
+ 			local->dot11TransmittedFragmentCount++;
+ 	} else {
+-		if (frag == 0)
++		if (frag == 0) {
+ 			local->dot11FailedCount++;
++			if (msg_debug)
++				printk(KERN_DEBUG "NOT ACKED:%d\n", local->dot11FailedCount); //LUIS
++		}
+ 	}
+ 
+ 	if (ieee80211_is_nullfunc(fc) && ieee80211_has_pm(fc) &&
+@@ -511,6 +580,8 @@ void ieee80211_tx_status(struct ieee8021
+ 		if (info->flags & IEEE80211_TX_STAT_ACK) {
+ 			local->ps_sdata->u.mgd.flags |=
+ 					IEEE80211_STA_NULLFUNC_ACKED;
++			if (msg_debug)
++				printk(KERN_DEBUG "IEEE80211_STA_NULLFUNC_ACKED\n"); //LUIS
+ 		} else
+ 			mod_timer(&local->dynamic_ps_timer, jiffies +
+ 					msecs_to_jiffies(10));
+@@ -522,6 +593,8 @@ void ieee80211_tx_status(struct ieee8021
+ 		if (ieee80211_is_nullfunc(hdr->frame_control) ||
+ 		    ieee80211_is_qos_nullfunc(hdr->frame_control)) {
+ 			bool acked = info->flags & IEEE80211_TX_STAT_ACK;
++			if (msg_debug)
++				printk(KERN_DEBUG "ACKED CFG80211\n"); //LUIS
+ 			cfg80211_probe_status(skb->dev, hdr->addr1,
+ 					      cookie, acked, GFP_ATOMIC);
+ 		} else {
+@@ -541,7 +614,8 @@ void ieee80211_tx_status(struct ieee8021
+ 				cookie = local->hw_roc_cookie ^ 2;
+ 				local->hw_roc_skb_for_status = NULL;
+ 			}
+-
++			if (msg_debug)
++				printk(KERN_DEBUG "MGMT_TX_STATUS CFG80211\n"); //LUIS
+ 			cfg80211_mgmt_tx_status(
+ 				skb->dev, cookie, skb->data, skb->len,
+ 				!!(info->flags & IEEE80211_TX_STAT_ACK),
+@@ -553,6 +627,10 @@ void ieee80211_tx_status(struct ieee8021
+ 		struct sk_buff *ack_skb;
+ 		unsigned long flags;
+ 
++		if (msg_debug) {
++			printk(KERN_DEBUG " ACK FRAME ID.\n"); //LUIS
++		}
++
+ 		spin_lock_irqsave(&local->ack_status_lock, flags);
+ 		ack_skb = idr_find(&local->ack_status_frames,
+ 				   info->ack_frame_id);
+diff -rupN compat-wireless-2011-11-15-original/net/mac80211/timer.c compat-wireless-2011-11-15/net/mac80211/timer.c
+--- compat-wireless-2011-11-15-original/net/mac80211/timer.c	1970-01-01 01:00:00.000000000 +0100
++++ compat-wireless-2011-11-15/net/mac80211/timer.c	2013-04-18 10:55:51.729626250 +0100
+@@ -0,0 +1,95 @@
++/**
++ * timer_setup - sets up the timer
++ *
++ * Calculates ack timeout based on @rate of the superframe
++ * and sets up the timer
++ *
++ * Created on: 8 de Fev de 2013
++ *      Author: luis
++ */
++
++#include "timer.h"
++#include "uloop-esm.h"
++
++struct ack_timer *timer;
++
++/**
++ * ack_timer_func - timer handler
++ * Executed when no ack is received for the buffered data frame
++ */
++static int ack_timer_func(struct hrtimer *atimer)
++{
++	struct ack_timer *timer = container_of(atimer, struct ack_timer, atimer);
++	struct ieee80211_local *local = timer->local;
++	struct sk_buff *skb;
++	unsigned long flags;
++
++	spin_lock_irqsave(&timer->qlock, flags);
++
++	while ((skb = skb_dequeue(&timer->coop_queue))) {
++		rcu_read_lock();
++		/* retransmit buffered data frame */
++		retransmitt_uloop(skb, local);
++		printk(KERN_DEBUG "TESTING TIMER\n");
++		rcu_read_unlock();
++	}
++	spin_unlock_irqrestore(&timer->qlock, flags);
++	return HRTIMER_NORESTART;
++}
++
++/**
++ * timer_setup - sets up the timer
++ *
++ * Calculates ack timeout based on @rate of the previous data frame
++ * and sets up the timer
++ */
++void timer_setup(struct ack_timer *timer, struct ieee80211_tx_info *info,
++	    struct ieee80211_rate *rate, struct ieee80211_local *local, struct sk_buff *skb)
++{
++	unsigned int ack_time; /* in usecs */
++	ktime_t ack_timeout;
++
++	ack_timeout = ktime_set(0, 0);
++	printk(KERN_DEBUG "Bitrate: %d\n", rate->bitrate);
++	if (info->band == IEEE80211_BAND_2GHZ)
++		ack_time = GET_ACK_TIMEOUT(SIFS_BG, rate->bitrate);
++	else
++		/* 5GHz band */
++		ack_time = GET_ACK_TIMEOUT(SIFS_A, rate->bitrate);
++	printk(KERN_DEBUG "Ack_time: %d\n", ack_time);
++	/* advance the timer if it is enqueued or callback function is running */
++	ack_time = compute_duration(local, skb);
++	if (hrtimer_active(&timer->atimer)) {
++		ack_timeout = ktime_add_ns(ack_timeout, ack_time*NSEC_PER_USEC);
++		hrtimer_forward_now(&timer->atimer, ack_timeout);
++		return;
++	}
++
++	ack_timeout = ktime_add_ns(ktime_get(), ack_time*NSEC_PER_USEC);
++	/* start the timer */
++	hrtimer_start(&timer->atimer, ack_timeout, HRTIMER_MODE_ABS);
++}
++
++int timer_init(void)
++{
++	timer = kmalloc(sizeof(struct ack_timer), GFP_KERNEL);
++
++	if (!timer)
++		return -ENOMEM;
++
++        spin_lock_init(&timer->qlock);
++
++	/* init rx/tx queue */
++	skb_queue_head_init(&timer->coop_queue);
++
++	/* init hrtimer */
++	hrtimer_init(&timer->atimer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
++	timer->atimer.function = (void *)ack_timer_func;
++
++	return 0;
++}
++
++void timer_destroy(void)
++{
++	kfree(timer);
++}
+diff -rupN compat-wireless-2011-11-15-original/net/mac80211/timer.h compat-wireless-2011-11-15/net/mac80211/timer.h
+--- compat-wireless-2011-11-15-original/net/mac80211/timer.h	1970-01-01 01:00:00.000000000 +0100
++++ compat-wireless-2011-11-15/net/mac80211/timer.h	2013-03-01 14:47:11.645619358 +0000
+@@ -0,0 +1,46 @@
++/*
++ * timer.h
++ *
++ *  Created on: 8 de Fev de 2013
++ *      Author: luis
++ */
++
++#ifndef TIMER_H_
++#define TIMER_H_
++
++#include <linux/hrtimer.h>
++#include <linux/ktime.h>
++#include <linux/skbuff.h>
++#include <net/mac80211.h>
++#include "ieee80211_i.h"
++
++/*
++ * ACK Timeout = SIFS
++ *		+ ACK transmission time in _us (14/rate in Msymbols/s)
++ *		+ preamble_time (192us or 96us)
++ *		+ propagation_delay (RRT) = 2us
++ * XXX:		+ overheads
++ *
++ * rate is in units of 100 Kbps
++ */
++#define GET_ACK_TIMEOUT(sifs, rate) DIV_ROUND_UP(1120, rate)+192+2+100
++
++#define SIFS_A  16 /* 802.11a */
++#define SIFS_BG 10 /* 802.11b/g */
++
++extern struct ack_timer *timer;
++
++extern int timer_init(void);
++extern void timer_destroy(void);
++extern void timer_setup(struct ack_timer*,  struct ieee80211_tx_info *,
++			struct ieee80211_rate*, struct ieee80211_local *, struct sk_buff *);
++
++struct ack_timer {
++#define IEEE80211_COOP_QUEUE_LIMIT 128
++	struct sk_buff_head coop_queue;
++	struct ieee80211_local *local;
++	struct hrtimer atimer;
++	spinlock_t qlock;
++};
++
++#endif /* TIMER_H_ */
+diff -rupN compat-wireless-2011-11-15-original/net/mac80211/tx.c compat-wireless-2011-11-15/net/mac80211/tx.c
+--- compat-wireless-2011-11-15-original/net/mac80211/tx.c	2011-11-17 13:56:19.000000000 +0000
++++ compat-wireless-2011-11-15/net/mac80211/tx.c	2013-07-31 14:33:20.061913291 +0100
+@@ -12,6 +12,19 @@
+  * Transmit and frame generation functions.
+  */
+ 
++/*
++ ============================================================================
++ Name        : tx.c (modified mac80211 code)
++ Author      : Luis Lopes (SITILABS, ULHT)
++ Version     : 4.0.0
++ Copyright   : ULOOP 2013
++ Description : Transmit and frame generation functions of mac80211,
++ 	 	 	   modified to implement the Elastic Spectrum Manager (Gateway Mode),
++  	  	  	   task 3.2 / prototype version 4.0.0
++ Date		 : June 2013
++ ============================================================================
++ */
++
+ #include <linux/kernel.h>
+ #include <linux/slab.h>
+ #include <linux/skbuff.h>
+@@ -33,6 +46,11 @@
+ #include "wpa.h"
+ #include "wme.h"
+ #include "rate.h"
++#include "uloop-esm.h"
++#include "timer.h"
++
++#define MAC2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5]
++#define MACSTR "%02x:%02x:%02x:%02x:%02x:%02x"
+ 
+ /* misc utils */
+ 
+@@ -509,6 +527,9 @@ ieee80211_tx_h_unicast_ps_buf(struct iee
+ static ieee80211_tx_result debug_noinline
+ ieee80211_tx_h_ps_buf(struct ieee80211_tx_data *tx)
+ {
++	if (tx->uloop_frame) {
++		return TX_CONTINUE;
++	}
+ 	if (unlikely(tx->flags & IEEE80211_TX_PS_BUFFERED))
+ 		return TX_CONTINUE;
+ 
+@@ -522,7 +543,6 @@ static ieee80211_tx_result debug_noinlin
+ ieee80211_tx_h_check_control_port_protocol(struct ieee80211_tx_data *tx)
+ {
+ 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(tx->skb);
+-
+ 	if (unlikely(tx->sdata->control_port_protocol == tx->skb->protocol &&
+ 		     tx->sdata->control_port_no_encrypt))
+ 		info->flags |= IEEE80211_TX_INTFL_DONT_ENCRYPT;
+@@ -898,13 +918,23 @@ ieee80211_tx_h_fragment(struct ieee80211
+ 	int frag_threshold = tx->local->hw.wiphy->frag_threshold;
+ 	int hdrlen;
+ 	int fragnum;
++	int first = 0, seq = 0; //LUIS
++	int msg_debug = 0;
++	u16 sc;
++
++	if (msg_debug)
++		printk(KERN_DEBUG "STARTING Fragment ------------------\n"); //LUIS
+ 
+ 	if (info->flags & IEEE80211_TX_CTL_DONTFRAG)
+ 		return TX_CONTINUE;
++	if (msg_debug)
++		printk(KERN_DEBUG "FLAG DONTFRAG not set. OK ------------------\n"); //LUIS
+ 
+ 	if (tx->local->ops->set_frag_threshold)
+ 		return TX_CONTINUE;
+ 
++	if (msg_debug)
++		printk(KERN_DEBUG "SET_FRAG_THRESHOLD. OK ------------------\n"); //LUIS
+ 	/*
+ 	 * Warn when submitting a fragmented A-MPDU frame and drop it.
+ 	 * This scenario is handled in ieee80211_tx_prepare but extra
+@@ -913,11 +943,17 @@ ieee80211_tx_h_fragment(struct ieee80211
+ 	if (WARN_ON(info->flags & IEEE80211_TX_CTL_AMPDU))
+ 		return TX_DROP;
+ 
++	if (msg_debug)
++		printk(KERN_DEBUG "AMPDU. OK ------------------\n"); //LUIS
++
+ 	hdrlen = ieee80211_hdrlen(hdr->frame_control);
+ 
+ 	/* internal error, why isn't DONTFRAG set? */
+-	if (WARN_ON(skb->len + FCS_LEN <= frag_threshold))
+-		return TX_DROP;
++
++	if (!tx->uloop_frame) {//LUIS
++		if (WARN_ON(skb->len + FCS_LEN <= frag_threshold) )
++			return TX_DROP;
++	}
+ 
+ 	/*
+ 	 * Now fragment the frame. This will allocate all the fragments and
+@@ -927,40 +963,72 @@ ieee80211_tx_h_fragment(struct ieee80211
+ 	 * of the fragments then we will simply pretend to accept the skb
+ 	 * but store it away as pending.
+ 	 */
+-	if (ieee80211_fragment(tx->local, skb, hdrlen, frag_threshold))
+-		return TX_DROP;
++
++	if (tx->uloop_frame) {
++		if (msg_debug)
++			printk(KERN_DEBUG "STARTING THE ULOOP FRAGMENTATION ------------------\n");
++		if (esm_fragment(tx->local, skb, hdrlen))
++			return TX_DROP;
++
++		first = 1;
++		if (msg_debug) {
++			teste_skb(skb, hdrlen);
++		}
++	} else {
++		if (ieee80211_fragment(tx->local, skb, hdrlen, frag_threshold))
++			return TX_DROP;
++	}
+ 
+ 	/* update duration/seq/flags of fragments */
+ 	fragnum = 0;
++
+ 	do {
+-		int next_len;
+-		const __le16 morefrags = cpu_to_le16(IEEE80211_FCTL_MOREFRAGS);
++		if (!tx->uloop_frame || first == 0)
++		{
++			int next_len;
++			const __le16 morefrags = cpu_to_le16(IEEE80211_FCTL_MOREFRAGS);
++
++			hdr = (void *)skb->data;
++			info = IEEE80211_SKB_CB(skb);
++
++			if (skb->next) {
++				hdr->frame_control |= morefrags;
++				next_len = skb->next->len;
++				/*
++				 * No multi-rate retries for fragmented frames, that
++				 * would completely throw off the NAV at other STAs.
++				 */
++				info->control.rates[1].idx = -1;
++				info->control.rates[2].idx = -1;
++				info->control.rates[3].idx = -1;
++				info->control.rates[4].idx = -1;
++				BUILD_BUG_ON(IEEE80211_TX_MAX_RATES != 5);
++				info->flags &= ~IEEE80211_TX_CTL_RATE_CTRL_PROBE;
++			} else {
++				hdr->frame_control &= ~morefrags;
++				next_len = 0;
++			}
++			if (!tx->uloop_frame)
++				hdr->duration_id = ieee80211_duration(tx, 0, next_len);
++			else
++				hdr->duration_id = ieee80211_duration(tx, 1, next_len);
+ 
+-		hdr = (void *)skb->data;
+-		info = IEEE80211_SKB_CB(skb);
++			hdr->seq_ctrl |= cpu_to_le16(fragnum & IEEE80211_SCTL_FRAG);
++			sc = le16_to_cpu(hdr->seq_ctrl);
++			seq = sc & IEEE80211_SCTL_SEQ;
++
++			if (msg_debug) {
++				printk(KERN_DEBUG "Sequence: %d\n", seq);
++				printk(KERN_DEBUG "Fragnum: %d\n", fragnum);
++			}
+ 
+-		if (skb->next) {
+-			hdr->frame_control |= morefrags;
+-			next_len = skb->next->len;
+-			/*
+-			 * No multi-rate retries for fragmented frames, that
+-			 * would completely throw off the NAV at other STAs.
+-			 */
+-			info->control.rates[1].idx = -1;
+-			info->control.rates[2].idx = -1;
+-			info->control.rates[3].idx = -1;
+-			info->control.rates[4].idx = -1;
+-			BUILD_BUG_ON(IEEE80211_TX_MAX_RATES != 5);
+-			info->flags &= ~IEEE80211_TX_CTL_RATE_CTRL_PROBE;
+-		} else {
+-			hdr->frame_control &= ~morefrags;
+-			next_len = 0;
++			fragnum++;
+ 		}
+-		hdr->duration_id = ieee80211_duration(tx, 0, next_len);
+-		hdr->seq_ctrl |= cpu_to_le16(fragnum & IEEE80211_SCTL_FRAG);
+-		fragnum++;
++		if (tx->uloop_frame && first == 1)
++			first = 0;
+ 	} while ((skb = skb->next));
+-
++	if (msg_debug)
++		printk(KERN_DEBUG "A sair do h_fragment. \n"); //LUIS
+ 	return TX_CONTINUE;
+ }
+ 
+@@ -1097,18 +1165,20 @@ ieee80211_tx_prepare(struct ieee80211_su
+ 		     struct ieee80211_tx_data *tx,
+ 		     struct sk_buff *skb)
+ {
++	int msg_debug = 0;
+ 	struct ieee80211_local *local = sdata->local;
+ 	struct ieee80211_hdr *hdr;
+ 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+ 	int tid;
+ 	u8 *qc;
+-
+ 	memset(tx, 0, sizeof(*tx));
+ 	tx->skb = skb;
+ 	tx->local = local;
+ 	tx->sdata = sdata;
+ 	tx->channel = local->hw.conf.channel;
+ 
++	if (msg_debug)
++		printk(KERN_DEBUG "%s: TX_PREPARE: tx->channel=%d\n", sdata->dev->name, tx->channel->center_freq); //LUIS
+ 	/*
+ 	 * If this flag is set to true anywhere, and we get here,
+ 	 * we are doing the needed processing, so remove the flag
+@@ -1117,6 +1187,17 @@ ieee80211_tx_prepare(struct ieee80211_su
+ 	info->flags &= ~IEEE80211_TX_INTFL_NEED_TXPROCESSING;
+ 
+ 	hdr = (struct ieee80211_hdr *) skb->data;
++	if (uloop_is_sf(hdr->frame_control)) { //LUIS
++		tx->uloop_frame = 1;
++		if (msg_debug) {
++			printk(KERN_DEBUG "SETTING FLAG ULOOP_FRAME = 1\n"); //LUIS
++		}
++	} else {
++		tx->uloop_frame = 0;
++	//	printk(KERN_DEBUG "SETTING FLAG ULOOP_FRAME = 0\n"); //LUIS
++	}
++	if (msg_debug)
++		printk(KERN_DEBUG "ULOOP_FRAME? %d\n", tx->uloop_frame); //LUIS
+ 
+ 	if (sdata->vif.type == NL80211_IFTYPE_AP_VLAN) {
+ 		tx->sta = rcu_dereference(sdata->u.vlan.sta);
+@@ -1128,6 +1209,9 @@ ieee80211_tx_prepare(struct ieee80211_su
+ 	if (!tx->sta)
+ 		tx->sta = sta_info_get(sdata, hdr->addr1);
+ 
++	if (msg_debug)
++		printk(KERN_DEBUG "%s: TX_PREPARE: tx->sta= " MACSTR "\n", sdata->dev->name, MAC2STR(hdr->addr1)); //LUIS
++
+ 	if (tx->sta && ieee80211_is_data_qos(hdr->frame_control) &&
+ 	    !ieee80211_is_qos_nullfunc(hdr->frame_control) &&
+ 	    (local->hw.flags & IEEE80211_HW_AMPDU_AGGREGATION) &&
+@@ -1151,7 +1235,14 @@ ieee80211_tx_prepare(struct ieee80211_su
+ 
+ 	if (is_multicast_ether_addr(hdr->addr1)) {
+ 		tx->flags &= ~IEEE80211_TX_UNICAST;
+-		info->flags |= IEEE80211_TX_CTL_NO_ACK;
++		if (!tx->uloop_frame){
++			info->flags |= IEEE80211_TX_CTL_NO_ACK;
++		} else {
++			if (msg_debug)
++				printk(KERN_DEBUG "Setting flag for ACK \n"); //LUIS
++			//info->flags &= ~IEEE80211_TX_CTL_NO_ACK; //LUIS With this flag if the GW don't receive an ACK, it will send 8 retries.
++			info->flags |= IEEE80211_TX_CTL_NO_ACK;
++		}
+ 	} else {
+ 		tx->flags |= IEEE80211_TX_UNICAST;
+ 		if (unlikely(local->wifi_wme_noack_test))
+@@ -1164,10 +1255,16 @@ ieee80211_tx_prepare(struct ieee80211_su
+ 	}
+ 
+ 	if (!(info->flags & IEEE80211_TX_CTL_DONTFRAG)) {
+-		if (!(tx->flags & IEEE80211_TX_UNICAST) ||
+-		    skb->len + FCS_LEN <= local->hw.wiphy->frag_threshold ||
+-		    info->flags & IEEE80211_TX_CTL_AMPDU)
+-			info->flags |= IEEE80211_TX_CTL_DONTFRAG;
++		if (!tx->uloop_frame) {
++			if (!(tx->flags & IEEE80211_TX_UNICAST) ||
++					skb->len + FCS_LEN <= local->hw.wiphy->frag_threshold ||
++					info->flags & IEEE80211_TX_CTL_AMPDU)
++				info->flags |= IEEE80211_TX_CTL_DONTFRAG;
++		} else {
++			if (msg_debug)
++				printk(KERN_DEBUG "Flag DONTFRAG not set for uloop frame \n"); //LUIS
++			//info->flags |= IEEE80211_TX_CTL_DONTFRAG;
++		}
+ 	}
+ 
+ 	if (!tx->sta)
+@@ -1186,20 +1283,38 @@ ieee80211_tx_prepare(struct ieee80211_su
+ static bool __ieee80211_tx(struct ieee80211_local *local, struct sk_buff **skbp,
+ 			   struct sta_info *sta, bool txpending)
+ {
++	int msg_debug = 0;
++	__le16 fc;
+ 	struct sk_buff *skb = *skbp, *next;
++	struct sk_buff *first_frag;
+ 	struct ieee80211_tx_info *info;
+ 	struct ieee80211_sub_if_data *sdata;
++	struct ieee80211_hdr *hdr2; //LUIS
+ 	unsigned long flags;
+ 	int len;
+ 	bool fragm = false;
++	int ack_esm = ACK_MECHANISM; //LUIS
++
++	if (msg_debug)
++		printk(KERN_DEBUG " ENTREI __IEEE80211_TX\n");
+ 
++	hdr2 = (struct ieee80211_hdr *) skb->data; //LUIS
++	if (uloop_is_sf(hdr2->frame_control)) { //LUIS
++		info = IEEE80211_SKB_CB(skb);
++		printk(KERN_DEBUG "ULOOP SF Served STA: %d\n", info->uloop.sta_served_uloop);
++
++		//Remove the ULOOP TEMP FRAME
++		first_frag = skb->next;
++		dev_kfree_skb(skb);
++		skb = first_frag;
++	}
+ 	while (skb) {
+ 		int q = skb_get_queue_mapping(skb);
+-		__le16 fc;
+-
++		if (msg_debug)
++			printk(KERN_DEBUG "__IEEE80211_TX: QUEUE do skb = %d\n", q);
+ 		spin_lock_irqsave(&local->queue_stop_reason_lock, flags);
+-		if (local->queue_stop_reasons[q] ||
+-		    (!txpending && !skb_queue_empty(&local->pending[q]))) {
++		if ((local->queue_stop_reasons[q] ||
++		    (!txpending && !skb_queue_empty(&local->pending[q]))) && !uloop_is_sf(hdr2->frame_control) ) {
+ 			/*
+ 			 * Since queue is stopped, queue up frames for later
+ 			 * transmission from the tx-pending tasklet when the
+@@ -1263,8 +1378,19 @@ static bool __ieee80211_tx(struct ieee80
+ 			info->control.sta = NULL;
+ 
+ 		fc = ((struct ieee80211_hdr *)skb->data)->frame_control;
+-		drv_tx(local, skb);
+ 
++		if (msg_debug)
++			printk(KERN_DEBUG "__IEEE80211_TX: Sending the frame to the driver.\n"); //LUIS
++		hdr2 = (struct ieee80211_hdr *) skb->data; //LUIS
++		if (msg_debug)
++			printk(KERN_DEBUG "__IEEE80211_TX: Frame for: " MACSTR "\n", MAC2STR(hdr2->addr1)); //LUIS
++
++		if (uloop_is_sf(hdr2->frame_control) && ack_esm) { //LUIS
++			teste_skb(skb, ieee80211_hdrlen(((struct ieee80211_hdr *)skb->data)->frame_control));
++			//start_timer_ACK_uloop(local, skb);
++		}
++
++		drv_tx(local, skb);
+ 		ieee80211_tpt_led_trig_tx(local, fc, len);
+ 		*skbp = skb = next;
+ 		ieee80211_led_tx(local, 1);
+@@ -1283,6 +1409,7 @@ static int invoke_tx_handlers(struct iee
+ 	struct sk_buff *skb = tx->skb;
+ 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+ 	ieee80211_tx_result res = TX_DROP;
++	int msg_debug = 0;
+ 
+ #define CALL_TXH(txh) \
+ 	do {				\
+@@ -1305,15 +1432,25 @@ static int invoke_tx_handlers(struct iee
+ 	CALL_TXH(ieee80211_tx_h_michael_mic_add);
+ 	CALL_TXH(ieee80211_tx_h_sequence);
+ 	CALL_TXH(ieee80211_tx_h_fragment);
++	if (tx->uloop_frame && msg_debug)
++		printk(KERN_DEBUG "uloop_tx_h_fragment\n");
+ 	/* handlers after fragment must be aware of tx info fragmentation! */
+ 	CALL_TXH(ieee80211_tx_h_stats);
++	if (tx->uloop_frame && msg_debug)
++		printk(KERN_DEBUG "uloop_tx_h_stats\n");
+ 	CALL_TXH(ieee80211_tx_h_encrypt);
++	if (tx->uloop_frame && msg_debug)
++		printk(KERN_DEBUG "uloop_tx_h_encrypt\n");
+ 	if (!(tx->local->hw.flags & IEEE80211_HW_HAS_RATE_CONTROL))
+ 		CALL_TXH(ieee80211_tx_h_calculate_duration);
++	if (tx->uloop_frame && msg_debug)
++		printk(KERN_DEBUG "uloop_tx_h_calculate_duration\n");
+ #undef CALL_TXH
+ 
+- txh_done:
++txh_done:
+ 	if (unlikely(res == TX_DROP)) {
++		if (tx->uloop_frame && msg_debug)
++			printk(KERN_DEBUG "TX_DROP\n");
+ 		I802_DEBUG_INC(tx->local->tx_handlers_drop);
+ 		while (skb) {
+ 			struct sk_buff *next;
+@@ -1325,9 +1462,13 @@ static int invoke_tx_handlers(struct iee
+ 		return -1;
+ 	} else if (unlikely(res == TX_QUEUED)) {
+ 		I802_DEBUG_INC(tx->local->tx_handlers_queued);
++		if (tx->uloop_frame && msg_debug)
++			printk(KERN_DEBUG "TX_QUEUED\n");
+ 		return -1;
+ 	}
+-
++	if (tx->uloop_frame && msg_debug) {
++		printk(KERN_DEBUG "TX_OK\n");
++	}
+ 	return 0;
+ }
+ 
+@@ -1337,12 +1478,16 @@ static int invoke_tx_handlers(struct iee
+ static bool ieee80211_tx(struct ieee80211_sub_if_data *sdata,
+ 			 struct sk_buff *skb, bool txpending)
+ {
++	int msg_debug = 0;
+ 	struct ieee80211_local *local = sdata->local;
+ 	struct ieee80211_tx_data tx;
+ 	ieee80211_tx_result res_prepare;
+ 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+ 	bool result = true;
+ 
++	if (msg_debug)
++		printk(KERN_DEBUG "%s: ENTREI IEEE80211_TX.\n", sdata->dev->name);
++
+ 	if (unlikely(skb->len < 10)) {
+ 		dev_kfree_skb(skb);
+ 		return true;
+@@ -1362,10 +1507,19 @@ static bool ieee80211_tx(struct ieee8021
+ 
+ 	tx.channel = local->hw.conf.channel;
+ 	info->band = tx.channel->band;
++	if (msg_debug) {
++		printk(KERN_DEBUG "%s: IEEE80211_TX: Invoking the TX_HANDLERS\n", sdata->dev->name); //LUIS
++	}
+ 
+-	if (!invoke_tx_handlers(&tx))
++	if (!invoke_tx_handlers(&tx)) {
+ 		result = __ieee80211_tx(local, &tx.skb, tx.sta, txpending);
+- out:
++	}
++	else
++	{
++		if (tx.uloop_frame)
++			printk(KERN_DEBUG "Problem ULOOP SUPERFRAME on invoke handlers\n");
++	}
++out:
+ 	rcu_read_unlock();
+ 	return result;
+ }
+@@ -1403,14 +1557,16 @@ static int ieee80211_skb_resize(struct i
+ 
+ void ieee80211_xmit(struct ieee80211_sub_if_data *sdata, struct sk_buff *skb)
+ {
++	int msg_debug = 0;
++
+ 	struct ieee80211_local *local = sdata->local;
+ 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+ 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *) skb->data;
+ 	int headroom;
+ 	bool may_encrypt;
+-
++	if (msg_debug)
++		printk(KERN_DEBUG "%s: Function XMIT ---------------\n", sdata->dev->name); //LUIS
+ 	rcu_read_lock();
+-
+ 	may_encrypt = !(info->flags & IEEE80211_TX_INTFL_DONT_ENCRYPT);
+ 
+ 	headroom = local->tx_headroom;
+@@ -1427,7 +1583,8 @@ void ieee80211_xmit(struct ieee80211_sub
+ 
+ 	hdr = (struct ieee80211_hdr *) skb->data;
+ 	info->control.vif = &sdata->vif;
+-
++	if (msg_debug == 1)
++		printk(KERN_DEBUG "%s: XMIT: info->control.vif=" MACSTR "\n", sdata->dev->name, MAC2STR(sdata->vif.addr));
+ 	if (ieee80211_vif_is_mesh(&sdata->vif) &&
+ 	    ieee80211_is_data(hdr->frame_control) &&
+ 		!is_multicast_ether_addr(hdr->addr1))
+@@ -1439,9 +1596,15 @@ void ieee80211_xmit(struct ieee80211_sub
+ 
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27))
+ 	/* Older kernels do not have the select_queue callback */
++	if (msg_debug)
++		printk(KERN_DEBUG "%s: XMIT->SET_QUEUE_MAPPING\n", sdata->dev->name);
+ 	skb_set_queue_mapping(skb, ieee80211_select_queue(sdata, skb));
+ #endif
++	if (msg_debug)
++		printk(KERN_DEBUG "%s: XMIT: Calling function SET_QOS_HDR\n", sdata->dev->name);
+ 	ieee80211_set_qos_hdr(sdata, skb);
++	if (msg_debug)
++		printk(KERN_DEBUG "%s: XMIT: Calling function ieee80211_tx\n", sdata->dev->name);
+ 	ieee80211_tx(sdata, skb, false);
+ 	rcu_read_unlock();
+ }
+@@ -1532,6 +1695,8 @@ static bool ieee80211_parse_tx_radiotap(
+ netdev_tx_t ieee80211_monitor_start_xmit(struct sk_buff *skb,
+ 					 struct net_device *dev)
+ {
++	int msg_debug = 0; //LUIS
++
+ 	struct ieee80211_local *local = wdev_priv(dev->ieee80211_ptr);
+ 	struct ieee80211_channel *chan = local->hw.conf.channel;
+ 	struct ieee80211_radiotap_header *prthdr =
+@@ -1646,7 +1811,8 @@ netdev_tx_t ieee80211_monitor_start_xmit
+ 			break;
+ 		}
+ 	}
+-
++	if ( msg_debug == 1)
++		printk(KERN_DEBUG "%s: ENTREI ieee80211_monitor_start_xmit.\n", sdata->dev->name); //LUIS
+ 	ieee80211_xmit(sdata, skb);
+ 	rcu_read_unlock();
+ 
+@@ -1675,6 +1841,8 @@ fail:
+ netdev_tx_t ieee80211_subif_start_xmit(struct sk_buff *skb,
+ 				    struct net_device *dev)
+ {
++	int msg_debug = 0; //LUIS
++
+ 	struct ieee80211_sub_if_data *sdata = IEEE80211_DEV_TO_SUB_IF(dev);
+ 	struct ieee80211_local *local = sdata->local;
+ 	struct ieee80211_tx_info *info;
+@@ -1694,6 +1862,11 @@ netdev_tx_t ieee80211_subif_start_xmit(s
+ 	u32 info_flags = 0;
+ 	u16 info_id = 0;
+ 
++	//struct vif_info inter;
++	if (msg_debug) {
++		printk(KERN_DEBUG "%s: FUNCTION: SUBIF_START_XMIT ------------------\n", dev->name); //LUIS
++	}
++
+ 	if (unlikely(skb->len < ETH_HLEN)) {
+ 		ret = NETDEV_TX_OK;
+ 		goto fail;
+@@ -1702,8 +1875,17 @@ netdev_tx_t ieee80211_subif_start_xmit(s
+ 	/* convert Ethernet header to proper 802.11 header (based on
+ 	 * operation mode) */
+ 	ethertype = (skb->data[12] << 8) | skb->data[13];
+-	fc = cpu_to_le16(IEEE80211_FTYPE_DATA | IEEE80211_STYPE_DATA);
+-
++	info = IEEE80211_SKB_CB(skb);
++	//if ((is_multicast_ether_addr(skb->data)) && (is_multicast_ether_addr(skb->data + ETH_ALEN))) {
++	if(info->uloop.sta_served_uloop == 1) {
++		if (msg_debug) {
++			printk(KERN_DEBUG "%s: SETTING STYPE_DATA_CFPOLL ON ULOOP_TEMP_FRAME\n", dev->name);
++		}
++		fc = cpu_to_le16(IEEE80211_FTYPE_DATA | IEEE80211_STYPE_DATA_CFPOLL);
++	}
++	else {
++		fc = cpu_to_le16(IEEE80211_FTYPE_DATA | IEEE80211_STYPE_DATA);
++	}
+ 	switch (sdata->vif.type) {
+ 	case NL80211_IFTYPE_AP_VLAN:
+ 		rcu_read_lock();
+@@ -1727,9 +1909,24 @@ netdev_tx_t ieee80211_subif_start_xmit(s
+ 		fc |= cpu_to_le16(IEEE80211_FCTL_FROMDS);
+ 		/* DA BSSID SA */
+ 		memcpy(hdr.addr1, skb->data, ETH_ALEN);
+-		memcpy(hdr.addr2, sdata->vif.addr, ETH_ALEN);
+-		memcpy(hdr.addr3, skb->data + ETH_ALEN, ETH_ALEN);
++		//ToDo: Check if with this modifications, the broadcast messages are been sent by do gateway.
++		if ((fc & cpu_to_le16(IEEE80211_FCTL_FTYPE | IEEE80211_STYPE_DATA_CFPOLL)) ==
++						cpu_to_le16(IEEE80211_FTYPE_DATA | IEEE80211_STYPE_DATA_CFPOLL)) { //LUIS
++			/* Uloop mode*/
++			memcpy(hdr.addr2, sdata->vif.addr, ETH_ALEN);
++			memcpy(hdr.addr3, skb->data + ETH_ALEN, ETH_ALEN);
++		}
++		else
++		{
++			/* Standart ieee80211*/
++			memcpy(hdr.addr2, sdata->vif.addr, ETH_ALEN);
++			memcpy(hdr.addr3, skb->data + ETH_ALEN, ETH_ALEN);
++		}
+ 		hdrlen = 24;
++		if (msg_debug) {
++			printk(KERN_DEBUG "%s: vif.type =NL80211_IFTYPE_AP\n", dev->name); //LUIS
++			printk(KERN_DEBUG "%s: HDR: addr1 = " MACSTR " addr2 = " MACSTR " addr3 = " MACSTR "\n", dev->name, MAC2STR(hdr.addr1), MAC2STR(hdr.addr2), MAC2STR(hdr.addr3)); //LUIS
++		}
+ 		break;
+ 	case NL80211_IFTYPE_WDS:
+ 		fc |= cpu_to_le16(IEEE80211_FCTL_FROMDS | IEEE80211_FCTL_TODS);
+@@ -1805,6 +2002,9 @@ netdev_tx_t ieee80211_subif_start_xmit(s
+ 		break;
+ #endif
+ 	case NL80211_IFTYPE_STATION:
++		if (msg_debug) {
++			printk(KERN_DEBUG "%s: vif.type =NL80211_IFTYPE_STATION\n", dev->name); //LUIS
++		}
+ 		if (sdata->wdev.wiphy->flags & WIPHY_FLAG_SUPPORTS_TDLS) {
+ 			bool tdls_peer = false;
+ 
+@@ -1880,6 +2080,8 @@ netdev_tx_t ieee80211_subif_start_xmit(s
+ 	 * in AP mode)
+ 	 */
+ 	multicast = is_multicast_ether_addr(hdr.addr1);
++	if (msg_debug)
++		printk(KERN_DEBUG "%s: hdr.addr1 is multicast? = %d\n", dev->name, multicast); //LUIS
+ 	if (!multicast) {
+ 		rcu_read_lock();
+ 		sta = sta_info_get(sdata, hdr.addr1);
+@@ -1893,13 +2095,17 @@ netdev_tx_t ieee80211_subif_start_xmit(s
+ 	/* For mesh, the use of the QoS header is mandatory */
+ 	if (ieee80211_vif_is_mesh(&sdata->vif))
+ 		wme_sta = true;
+-
+ 	/* receiver and we are QoS enabled, use a QoS type frame */
+-	if (wme_sta && local->hw.queues >= 4) {
++	/* For uloop vifs the QOS is DISABLED */
++	if (wme_sta && local->hw.queues >= 4 && !sdata->uloop.uloop_vif) {
+ 		fc |= cpu_to_le16(IEEE80211_STYPE_QOS_DATA);
+ 		hdrlen += 2;
+ 	}
+-
++	else {
++		if (msg_debug) {
++			printk(KERN_DEBUG "%s: QOS DISABLED\n", dev->name); //LUIS
++		}
++	}
+ 	/*
+ 	 * Drop unicast frames to unauthorised stations unless they are
+ 	 * EAPOL frames from the local station.
+@@ -1989,7 +2195,7 @@ netdev_tx_t ieee80211_subif_start_xmit(s
+ 		encaps_data = bridge_tunnel_header;
+ 		encaps_len = sizeof(bridge_tunnel_header);
+ 		skip_header_bytes -= 2;
+-	} else if (ethertype >= 0x600) {
++	} else if (ethertype >= 0x600 && !uloop_is_sf(fc)) {
+ 		encaps_data = rfc1042_header;
+ 		encaps_len = sizeof(rfc1042_header);
+ 		skip_header_bytes -= 2;
+@@ -1997,14 +2203,17 @@ netdev_tx_t ieee80211_subif_start_xmit(s
+ 		encaps_data = NULL;
+ 		encaps_len = 0;
+ 	}
+-
++	//printk( KERN_DEBUG " nh_pos0 = %d\n", nh_pos);
++	//printk( KERN_DEBUG " h_pos0 = %d\n", h_pos);
+ 	nh_pos = skb_network_header(skb) - skb->data;
+-	h_pos = skb_transport_header(skb) - skb->data;
+-
++	h_pos = skb_transport_header(skb) - skb->data;//nh_pos(luis);
++	//printk( KERN_DEBUG " nh_pos1 = %d\n", nh_pos);
++	//printk( KERN_DEBUG " h_pos1 = %d\n", h_pos);
+ 	skb_pull(skb, skip_header_bytes);
+ 	nh_pos -= skip_header_bytes;
+ 	h_pos -= skip_header_bytes;
+-
++	//printk( KERN_DEBUG " nh_pos2 = %d\n", nh_pos);
++	//printk( KERN_DEBUG " h_pos2 = %d\n", h_pos);
+ 	head_need = hdrlen + encaps_len + meshhdrlen - skb_headroom(skb);
+ 
+ 	/*
+@@ -2043,7 +2252,8 @@ netdev_tx_t ieee80211_subif_start_xmit(s
+ 
+ 	if (ieee80211_is_data_qos(fc)) {
+ 		__le16 *qos_control;
+-
++		if (msg_debug)
++			printk(KERN_DEBUG "%s: is_data_qos \n", dev->name); //LUIS
+ 		qos_control = (__le16*) skb_push(skb, 2);
+ 		memcpy(skb_push(skb, hdrlen - 2), &hdr, hdrlen - 2);
+ 		/*
+@@ -2051,22 +2261,33 @@ netdev_tx_t ieee80211_subif_start_xmit(s
+ 		 * initialise to zero to indicate no special operation.
+ 		 */
+ 		*qos_control = 0;
+-	} else
++	} else {
+ 		memcpy(skb_push(skb, hdrlen), &hdr, hdrlen);
+-
++		if (msg_debug)
++			printk(KERN_DEBUG "%s: Not QOS \n", dev->name); //LUIS
++	}
++	//printk( KERN_DEBUG " nh_pos3 = %d\n", nh_pos);
++	//printk( KERN_DEBUG " h_pos3 = %d\n", h_pos);
+ 	nh_pos += hdrlen;
+ 	h_pos += hdrlen;
+-
++	//printk( KERN_DEBUG " nh_pos4 = %d\n", nh_pos);
++	//printk( KERN_DEBUG " h_pos4 = %d\n", h_pos);
+ 	dev->stats.tx_packets++;
+ 	dev->stats.tx_bytes += skb->len;
+ 
+ 	/* Update skb pointers to various headers since this modified frame
+ 	 * is going to go through Linux networking code that may potentially
+ 	 * need things like pointer to IP header. */
++
+ 	skb_set_mac_header(skb, 0);
+ 	skb_set_network_header(skb, nh_pos);
+ 	skb_set_transport_header(skb, h_pos);
+ 
++	if (uloop_is_sf(hdr.frame_control)) {
++		skb_reset_network_header(skb);
++		skb_reset_mac_header(skb);
++	}
++
+ 	info = IEEE80211_SKB_CB(skb);
+ 	memset(info, 0, sizeof(*info));
+ 
+@@ -2112,18 +2333,20 @@ static bool ieee80211_tx_pending_skb(str
+ 	struct sta_info *sta;
+ 	struct ieee80211_hdr *hdr;
+ 	bool result;
++	int msg_debug = 0; // LUIS
+ 
+ 	sdata = vif_to_sdata(info->control.vif);
+-
+ 	if (info->flags & IEEE80211_TX_INTFL_NEED_TXPROCESSING) {
++		if (msg_debug)
++			printk(KERN_DEBUG "ieee80211_tx_pending_skb: Necessita de TXPROCESSING. A CHAMAR ieee80211_tx.\n");
+ 		result = ieee80211_tx(sdata, skb, true);
+ 	} else {
+ 		hdr = (struct ieee80211_hdr *)skb->data;
+ 		sta = sta_info_get(sdata, hdr->addr1);
+-
++		if (msg_debug)
++			printk(KERN_DEBUG "ieee80211_tx_pending_skb: A CHAMAR __ieee80211_tx.\n");
+ 		result = __ieee80211_tx(local, &skb, sta, true);
+ 	}
+-
+ 	return result;
+ }
+ 
+@@ -2137,11 +2360,16 @@ void ieee80211_tx_pending(unsigned long
+ 	unsigned long flags;
+ 	int i;
+ 	bool txok;
++	int msg_debug = 0;
+ 
++	if (msg_debug)
++		printk(KERN_DEBUG "ieee80211_tx_pending: Transmit all pending packets.\n");
+ 	rcu_read_lock();
+ 
+ 	spin_lock_irqsave(&local->queue_stop_reason_lock, flags);
+ 	for (i = 0; i < local->hw.queues; i++) {
++		if (msg_debug)		
++			printk(KERN_DEBUG "ieee80211_tx_pending: A analisar queue %d.\n",i);
+ 		/*
+ 		 * If queue is stopped by something other than due to pending
+ 		 * frames, or we have no pending frames, proceed to next queue.
+@@ -2151,6 +2379,8 @@ void ieee80211_tx_pending(unsigned long
+ 			continue;
+ 
+ 		while (!skb_queue_empty(&local->pending[i])) {
++			if (msg_debug)			
++				printk(KERN_DEBUG "ieee80211_tx_pending: removing skb from queue %d.\n",i);
+ 			struct sk_buff *skb = __skb_dequeue(&local->pending[i]);
+ 			struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+ 
+@@ -2266,7 +2496,7 @@ struct sk_buff *ieee80211_beacon_get_tim
+ 	struct ieee80211_tx_rate_control txrc;
+ 
+ 	sband = local->hw.wiphy->bands[band];
+-
++	//printk(KERN_DEBUG "							ENTREI IEEE80211_BEACON_GET_TIM\n"); //LUIS
+ 	rcu_read_lock();
+ 
+ 	sdata = vif_to_sdata(vif);
+diff -rupN compat-wireless-2011-11-15-original/net/mac80211/uloop-esm.c compat-wireless-2011-11-15/net/mac80211/uloop-esm.c
+--- compat-wireless-2011-11-15-original/net/mac80211/uloop-esm.c	1970-01-01 01:00:00.000000000 +0100
++++ compat-wireless-2011-11-15/net/mac80211/uloop-esm.c	2013-10-30 16:44:17.475667360 +0000
+@@ -0,0 +1,1552 @@
++///**
++// * @brief Elastic Spectrum Manager (Gateway Mode), task 3.2 / prototype version 4.0.0
++// */
++///**
++// * @file uloop-esm.c
++// * @author Luis Lopes (SITILABS, ULHT)
++// * @date June, 2013
++// */
++
++/*
++ ============================================================================
++ Name        : uloop-esm.c
++ Author      : Luis Lopes (SITILABS, ULHT)
++ Version     : 4.0.0
++ Copyright   : ULOOP 2013
++ Description : Elastic Spectrum Manager (Gateway Mode),
++  	  	  	   task 3.2 / prototype version 4.0.0
++ Date		 : June 2013
++ ============================================================================
++ */
++
++#include <linux/kernel.h>
++#include <linux/netdevice.h>
++#include <linux/skbuff.h>
++#include <net/mac80211.h>
++#include <linux/netlink.h>
++#include <net/sock.h>
++#include <net/net_namespace.h>
++
++#ifndef ULOOP
++
++#include "ieee80211_i.h"
++
++#include "uloop-esm.h"
++#include "timer.h"
++
++#define MAC2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5]
++#define MACSTR "%02x:%02x:%02x:%02x:%02x:%02x"
++
++static struct sock *nl_sk_cac = NULL;
++static struct sock *nl_sk_init = NULL;
++
++int ESM_working_mode;
++
++static int free_bits = TOTALBITS;
++static int free_sta_slot = MAX_STA_NUMBER;
++static int id_sta[MAX_STA_NUMBER];
++float tokens_provided = 0;
++
++struct requestToCompute {
++	uint8_t cryptoid[32];
++	int token;
++	int id;
++	u8 macAddress[ETH_ALEN];
++};
++
++static struct requestToCompute requestCompute;
++
++/**
++ * assign_sta - Function that assign a sta to the new vif (created by RM).
++ * This function calculates the number of bits that will be used during
++ * the superframe creation(Fragmentation). It also assign the MAC address from
++ * the station to this new VF. This MAC address will be used during the rx side(GW),
++ * to check which vif will receive the frame.
++ * @param dev
++ * 	information about the interface
++ * @param type
++ * 	interface type
++ */
++int assign_bits_to_sta(struct net_device *dev, enum nl80211_iftype type)
++{
++	struct ieee80211_sub_if_data *sdata;
++	struct ieee80211_local *local;
++	int i, msg_debug = 1;
++
++	sdata = IEEE80211_DEV_TO_SUB_IF(dev);
++	local = sdata->local;
++
++	if (!local->uloop_open_vif.vif_enable && requestCompute.id == -1 && type != NL80211_IFTYPE_MONITOR) {
++		local->uloop_open_vif.dev = dev;
++		local->uloop_open_vif.vif_enable = 1;
++		printk(KERN_DEBUG "VIF ULOOP_OPEN CREATED.\n");
++	}
++
++	/* Check if the vif is AP interface and if
++	 * exist a ESM request pending.
++	 * if yes, then this a ULOOP VIF.
++	 * If not, then this a NON-ULOOP VIF.
++	 */
++
++	if (requestCompute.id != -1 && type != NL80211_IFTYPE_MONITOR) {
++
++		/* ULOOP VIF*/
++
++		//sdata = IEEE80211_DEV_TO_SUB_IF(dev);
++		//local = sdata->local;
++
++		for (i = 0; i < MAX_STA_NUMBER; i++)
++		{
++			if (local->uloop[i].queues == 0){
++				sdata->uloop.index = i;
++				sdata->uloop.id = requestCompute.id;
++				sdata->uloop.uloop_vif = 1;
++
++				//memcpy(sdata->uloop.cryptoid, requestCompute.cryptoid, CRYPTO_ID_SIZE);
++				//memcpy(&(sdata->cryptoid), requestCompute.cryptoid, CRYPTO_ID_SIZE);
++				//sdata->id = i;
++
++				local->uloop[i].vif.active = 1;
++				local->uloop[i].vif.sdata = sdata;
++				local->uloop[i].id = requestCompute.id;
++				local->uloop[i].token = requestCompute.token;
++				sdata->uloop.token = requestCompute.token; // IF NOT NEEDED, REMOVE!
++
++				/* Save the MAC address of sta inside the vif information */
++				memcpy(local->uloop[i].macAddress, requestCompute.macAddress, ETH_ALEN);
++				printk(KERN_DEBUG "ULOOP VIF CREATED\n");
++				printk(KERN_DEBUG "Index: %d\n", sdata->uloop.index);
++				printk(KERN_DEBUG "STA MAC Address = " MACSTR "\n", MAC2STR(local->uloop[i].macAddress));
++				printk(KERN_DEBUG "Token: %d\n", local->uloop[i].token);
++				printk(KERN_DEBUG "ID request: %d\n", requestCompute.id);
++
++				clean_requestCompute();
++
++				//ToDo: To able to use token as a double (like the ULOOP specifications) without
++				// any multiplication by 1000, SoftFPU must be installed in kernel.
++				// Kernel, by default don't support double and float values.
++				// Because this, the token value is multiplied by 1000 by RM and the spectrum
++				// slot is also multiplied by 1000.
++
++				local->uloop[i].queues = local->uloop[i].token;
++
++				if (msg_debug)
++					printk(KERN_DEBUG "Number of bits: %d\n", local->uloop[i].queues);
++
++				local->spectrum_slot = local->spectrum_slot - local->uloop[i].queues;
++				if (msg_debug)
++					printk(KERN_DEBUG "spectrum_slot: %d\n", local->spectrum_slot);
++
++				free_bits = local->spectrum_slot;
++				local->uloop[i].dev = dev;
++				local->uloop_vif_number++;
++				break;
++			}
++		}
++	} else {
++		/* NON ULOOP VIF*/
++		sdata = IEEE80211_DEV_TO_SUB_IF(dev);
++		sdata->uloop.uloop_vif = 0;
++		return 0;
++	}
++	return 1;
++}
++
++/**
++ * remove_bits_from_sta - Function that remove the assign number of bits from a STA.
++ * @param dev
++ * 	info about the interface
++ */
++void remove_bits_to_sta(struct net_device *dev)
++{
++	struct ieee80211_sub_if_data *sdata;
++	struct ieee80211_local *local;
++	int index;
++
++	sdata = IEEE80211_DEV_TO_SUB_IF(dev);
++
++	if (sdata->uloop.uloop_vif) {
++		local = sdata->local;
++		index = sdata->uloop.index;
++		local->spectrum_slot = local->spectrum_slot + local->uloop[index].queues;
++		free_bits = local->spectrum_slot;
++		local->uloop[index].queues = 0;
++		local->uloop[index].token = 0;
++		local->uloop[index].cryptoid = 0;
++		remove_id(local->uloop[index].id);
++		local->uloop[index].id = -1;
++		memset(local->uloop[index].macAddress, 0, ETH_ALEN);
++		local->uloop[index].vif.active = 0;
++		sdata->uloop.uloop_vif = 0;
++		sdata->uloop.index = -1;
++		free_sta_slot++;
++		local->uloop_vif_number--;
++	}
++}
++
++
++const char *byte_to_binary(int x)
++{
++    static char b[17];
++    int z;
++
++    b[0] = '\0';
++
++    for (z = 32768; z > 0; z >>= 1)
++    {
++    	strcat(b, ((x & z) == z) ? "1" : "0");
++    }
++
++    return b;
++}
++
++void print_bytes(const unsigned char *hash, size_t size)
++{
++	int i = 0;
++	for (i = 0; i < size; i++) {
++		printk(KERN_DEBUG "%02x", hash[i]);
++	}
++}
++
++int compute_upper_limit_subs(int num_sta)
++{
++	int X = 1200; // X = 1200 = 1.2
++	int N = TOTALBITS;
++	return  ((((1000*(N*1000))/(num_sta*1000))*X)+500000)/1000000;
++}
++void compute_token_to_bits(struct uloop_frame *uloop_info, int num_sta, int T_total)
++{
++	int j = 0, upper_limit_subs = 0, T_total_new = 0, N_new = 0, last_value = 0;
++	int msg_debug = 0;
++	int N = TOTALBITS;
++
++	/* Upper limit subs calculation */
++
++	upper_limit_subs = compute_upper_limit_subs(num_sta);
++	if (msg_debug) {
++		printk("Upper_Limit: %d\n", upper_limit_subs);
++	}
++
++	while (N > 0) {
++		if (msg_debug) {
++			printk("T_total: %d\n", T_total);
++		}
++		for (j = 0; j < num_sta; j++) {
++			if (uloop_info[j].eod == 0) {
++				last_value = uloop_info[j].vif_bits;
++				uloop_info[j].vif_bits += ((((1000*uloop_info[j].token)/T_total) * N) + 500)/1000;
++				if (uloop_info[j].vif_bits >= upper_limit_subs) {
++					uloop_info[j].vif_bits = upper_limit_subs;
++					uloop_info[j].eod = 1;
++					T_total_new += uloop_info[j].token;
++					if (msg_debug) {
++						printk("BIT ASSIGNED = %d\n", uloop_info[j].vif_bits);
++					}
++				}
++				N_new += uloop_info[j].vif_bits - last_value;
++				if (msg_debug) {
++					printk("New N = %d\n", N_new);
++				}
++			}
++		}
++		N -= N_new;
++		N_new = 0;
++		T_total -= T_total_new;
++		T_total_new = 0;
++	}
++	if (msg_debug) {
++		printk("N = %d\n", N);
++	}
++}
++
++/**
++ * esm_get_frame - Function that receives the ethernet frames from the kernel and queue
++ * this frames into the ESM queues.
++ * @param skb
++ * 	socket buffer - this is a ethernet frame
++ * @param dev
++ * 	information about the interface
++ * @return netdev_tx_t
++ * 	status about the transmission of the frame
++ */
++netdev_tx_t esm_get_frame( struct sk_buff *skb, struct net_device *dev)
++{
++	int i;
++	int msg_debug = 0;
++	int ret = 0;
++	struct ieee80211_sub_if_data *sdata = IEEE80211_DEV_TO_SUB_IF(dev);
++	struct ieee80211_local *local = sdata->local;
++	struct ieee80211_tx_info *info;
++	u16 teste = 0;
++	u16 ethertype = 0;
++
++
++	switch (ESM_working_mode) {
++
++		case ESM_GATEWAY_MODE:
++			memcpy(&teste, skb->data + ETH_HLEN , sizeof(teste));
++			ethertype = (skb->data[12] << 8) | skb->data[13];
++
++			if (!sdata->uloop.uloop_vif)
++			{
++				if (msg_debug)
++					printk(KERN_DEBUG "%s: NO ULOOP VIF\n", dev->name);
++				info = IEEE80211_SKB_CB(skb);
++				info->uloop.sta_served_uloop = 0;
++				ret = ieee80211_subif_start_xmit(skb, dev);
++				goto no_uloop;
++			}
++			if (msg_debug) {
++				printk(KERN_DEBUG "%s: ULOOP -> ID IFACE: %d\n", dev->name, sdata->uloop.index);
++				for (i = 0; i < MAX_STA_NUMBER; i++)
++					printk(KERN_DEBUG "%s: ARRAY IFACE: %d\n", dev->name, local->uloop[i].queues);
++			}
++			if (sdata->uloop.index != -1)
++				skb_queue_tail(&local->uloop_skb_queue[sdata->uloop.index], skb);
++			else
++				goto no_uloop;
++			if (msg_debug) {
++				printk(KERN_DEBUG "STA_QUEUES STATUS:\n");
++				for (i = 0; i < MAX_STA_NUMBER; i++) {
++					if ( skb_queue_empty(&local->uloop_skb_queue[i]) ) {
++						printk(KERN_DEBUG "%s: local->Uloop_skb_queue EMPTY\n", dev->name);
++					}
++					else {
++						printk(KERN_DEBUG "%s: local->Uloop_skb_queue NOT EMPTY lenght: %d\n", dev->name, skb_queue_len(&local->uloop_skb_queue[i]));
++					}
++				}
++			}
++			break;
++		case ESM_OFF_MODE:
++		case ESM_STATION_MODE:
++			//printk(KERN_DEBUG "ESM OFF OR IN STATION MODE. SENDING NORMAL WAY\n");
++			//Send ETH Frame to subif_start_xmit normal way.
++			info = IEEE80211_SKB_CB(skb);
++			info->uloop.sta_served_uloop = 0;
++			ret = ieee80211_subif_start_xmit(skb, dev);
++			goto no_uloop;
++		default:
++			break;
++	}
++
++	if (sdata->uloop.uloop_vif)
++		tasklet_schedule(&local->tx_pending_uloop_tasklet);
++no_uloop:
++	return NETDEV_TX_OK;
++}
++
++
++/**
++ * make_uloop_temp_frame - Create the uloop temp frame, which contains the payload to be transmitted to each station.
++ * This temporaty frame will be used to make the superframe.
++ * @param local
++ * 	information about the local device
++ * @return netdev_tx_t
++ * 	status of transmission
++ */
++void make_uloop_temp_frame (struct ieee80211_local *local) {
++	struct sk_buff *uloop_temp_frame = NULL;
++	struct sk_buff *work_frame = NULL;
++	struct ieee80211_tx_info *info;
++	int i,j = 0, length[MAX_STA_NUMBER], length_total = 0;
++	char broadaddrs;
++	__be16 type = 0;
++	u8 addr[6];
++	u16 tipo = 0;
++	u16 cb = 0;
++	int msg_debug = 0;
++	int create_uloop_frame = 0;
++	int size = 0;
++	int T_total = 0;
++	struct uloop_frame uloop_info[MAX_STA_NUMBER];
++	u8 addrTest[6];
++	u8 addrDest[6];
++	int encaps_len, skip_header_bytes, header_bytes;
++	u16 ethertype;
++	const u8 *encaps_data;
++
++	/* The first condition to create a Superframe is to have more than one sta queues with
++	* frames to transmit.
++	*/
++	for (i=0; i < MAX_STA_NUMBER; i++)
++	{
++		if (local->uloop[i].vif.active == 1) {
++			if ( !skb_queue_empty(&local->uloop_skb_queue[i])) {
++				create_uloop_frame ++;
++				uloop_info[j].id = local->uloop[i].id;
++				uloop_info[j].token = local->uloop[i].token;
++				uloop_info[j].eod = 0;
++				uloop_info[j].vif_bits = 0;
++				uloop_info[j].pos_uloop_skb_queue = i;
++				T_total += local->uloop[i].token;
++				j++;
++			}
++		}
++	}
++
++	if (create_uloop_frame > 1)
++	{
++		/* There's more than one STA queue with frames to transmit. So we can begin the process
++		 * create a Superframe at mac80211.
++		 */
++
++		/* Expression for Token definition */
++
++		compute_token_to_bits(uloop_info, create_uloop_frame, T_total);
++
++		if (msg_debug) {
++			printk(KERN_DEBUG "Creating ULOOP_TEMP_FRAME ------------\n");
++		}
++
++		for (j = 0; j < create_uloop_frame; j++) {
++			i = uloop_info[j].pos_uloop_skb_queue;
++			if ( skb_queue_empty(&local->uloop_skb_queue[i]) == 0 && uloop_info[j].vif_bits!=0){
++				work_frame = skb_peek(&local->uloop_skb_queue[i]);
++				//Ethernet frame
++				length[j] = work_frame->len - ETH_HLEN; //- ETH_FCS_LEN; //
++				if (msg_debug) {
++					printk(KERN_DEBUG "Length: %d\n", length[j]);
++				}
++				length_total += length[j] + 2 + ETH_HLEN + sizeof(rfc1042_header);
++			}
++		}
++		if (msg_debug) {
++			printk(KERN_DEBUG "Length Total: %d\n", length_total);
++		}
++		uloop_temp_frame = dev_alloc_skb(local->tx_headroom +
++								length_total +
++								IEEE80211_ENCRYPT_HEADROOM +
++								IEEE80211_ENCRYPT_TAILROOM);
++
++		//uloop_temp_frame->ip_summed = CHECKSUM_UNNECESSARY; /* don't check it */
++
++		if (!uloop_temp_frame) {
++			printk(KERN_NOTICE "ESM-ULOOP: low on mem - packet dropped\n");
++			kfree_skb(work_frame);
++			for (i = 0; i < MAX_STA_NUMBER; i++) {
++				skb_queue_purge(&local->uloop_skb_queue[i]);
++			}
++			goto out;
++		}
++
++		skb_reserve(uloop_temp_frame, local->tx_headroom +
++						 IEEE80211_ENCRYPT_HEADROOM);
++
++		for (j = 0; j < create_uloop_frame; j++) {
++			i = uloop_info[j].pos_uloop_skb_queue;
++			if ( !skb_queue_empty(&local->uloop_skb_queue[i])){
++				work_frame = __skb_dequeue(&local->uloop_skb_queue[i]); //skb_peek(&local->uloop_skb_queue[i]);
++				cb = local->uloop[i].id;//cb = i;
++				cb = (cb << 1);
++				//cb = (cb & 0);
++				cb = (cb << 11); /*12*/
++
++
++				/* convert Ethernet header to proper 802.11 header (based on
++				 * operation mode) */
++				ethertype = (work_frame->data[12] << 8) | work_frame->data[13];
++
++				skip_header_bytes = ETH_HLEN;
++				header_bytes = ETH_HLEN;
++				if (ethertype == ETH_P_AARP || ethertype == ETH_P_IPX) {
++					encaps_data = bridge_tunnel_header;
++					encaps_len = sizeof(bridge_tunnel_header);
++					skip_header_bytes -= 2;
++				} else if (ethertype >= 0x600) {
++					if (msg_debug) {
++						printk(KERN_DEBUG "Creating the RFC 1042 Header.\n");
++					}
++					encaps_data = rfc1042_header;
++					encaps_len = sizeof(rfc1042_header);
++					skip_header_bytes -= 2;
++				} else {
++					if (msg_debug) {
++						printk(KERN_DEBUG "No Encapsulation.\n");
++					}
++					encaps_data = NULL;
++					encaps_len = 0;
++				}
++
++				//Put de length on CB depending if exist encaps data or not
++				//If RFC 1042: lenght = Dest(6) + Src(6) + Encaps + Type(2)
++				cb = (cb | (length[j] + header_bytes - skip_header_bytes + encaps_len + header_bytes - 2));
++				if (msg_debug) {
++					printk(KERN_DEBUG "CB of id %d: %d\n", local->uloop[i].id, cb);
++				}
++				//Put the CB to the uloop_temp_frame
++				memcpy(skb_put(uloop_temp_frame, sizeof(cb)), &cb, sizeof(cb));
++
++				//Put the Destination Address inside the payload
++				memcpy(&addrDest, work_frame->data, ETH_ALEN);
++				if (msg_debug==0) {
++					printk(KERN_DEBUG "HDR: ETH addr1 Dest= " MACSTR "\n", MAC2STR(addrDest));
++				}
++				memcpy(skb_put(uloop_temp_frame, ETH_ALEN), addrDest, ETH_ALEN);
++
++				//Put the Source Address inside the payload
++				memcpy(&addrTest, work_frame->data + ETH_ALEN, ETH_ALEN);
++				if (msg_debug==0) {
++					printk(KERN_DEBUG "HDR: ETH addr2 Src = " MACSTR "\n", MAC2STR(addrTest));
++				}
++				memcpy(skb_put(uloop_temp_frame, ETH_ALEN), addrTest, ETH_ALEN);
++
++				if (encaps_data) {
++					//Put the encaps data (RFC 1042) if exist
++					memcpy(skb_put(uloop_temp_frame, encaps_len), encaps_data, encaps_len);
++				}
++
++				//Put the payload to the uloop_temp_frame, including the type if encaps_data is true
++				memcpy(skb_put(uloop_temp_frame, length[j] + header_bytes - skip_header_bytes), work_frame->data + skip_header_bytes, length[j] + header_bytes - skip_header_bytes);
++
++				//TO REMOVE
++				//if (i == 1)
++				//	memcpy(&addrSrc, work_frame->data + ETH_ALEN, ETH_ALEN);
++				//dev_kfree_skb(skb_dequeue(&local->uloop_skb_queue[i]));
++			}
++		}
++		kfree_skb(work_frame);
++		/***************************
++		* MAKE ULOOP ETHERNET HEAD *
++		****************************/
++
++		type = htons(ETH_P_802_3);
++
++		//BROADCAST ADDRESS FF:FF:FF:FF:FF:FF
++		broadaddrs = 255;
++
++		memcpy(skb_push(uloop_temp_frame, sizeof(type)), &type, sizeof(type));
++
++		/*SOURCE ADDRS: MULTICAST*/
++		memset(skb_push(uloop_temp_frame, ETH_ALEN), 0xff, ETH_ALEN);
++		//memcpy(skb_push(uloop_temp_frame, ETH_ALEN), addrSrc, ETH_ALEN); //TRABALHAR NA PARTE DO MAC ADDR!!!
++
++		/*DESTINATION ADDRS: MULTICAST*/
++		memset(skb_push(uloop_temp_frame, ETH_ALEN), 0xff, ETH_ALEN);
++
++
++		if (msg_debug) {
++			memcpy(addr, uloop_temp_frame->data, ETH_ALEN);
++			printk(KERN_DEBUG "DEST: addr = " MACSTR "\n", MAC2STR(addr));
++			memcpy(addr, uloop_temp_frame->data + ETH_ALEN, ETH_ALEN);
++			printk(KERN_DEBUG "SOURCE: addr = " MACSTR "\n", MAC2STR(addr));
++			memcpy(&tipo, uloop_temp_frame->data + ETH_ALEN + ETH_ALEN, 2);
++			printk(KERN_DEBUG "SOURCE: type = %d\n", tipo);
++		}
++		//skb_set_mac_header(uloop_temp_frame, 0);
++		//skb_set_network_header(uloop_temp_frame, ETH_ALEN);
++		//skb_reset_network_header(uloop_temp_frame);
++		//skb_reset_transport_header(uloop_temp_frame);
++		//skb_set_transport_header(uloop_temp_frame,ETH_ALEN);
++
++		uloop_temp_frame->dev = local->uloop[0].dev;
++		skb_set_queue_mapping(uloop_temp_frame, IEEE80211_AC_BE);
++		uloop_temp_frame->priority = 0;
++
++		//Flag to identify this frame as a ULOOP frame
++		info = IEEE80211_SKB_CB(uloop_temp_frame);
++		memset(info, 0, sizeof(*info));
++		info->uloop.sta_served_uloop = 1;
++
++		//Send the Uloop_temp_frame
++		//ieee80211_subif_start_xmit(uloop_temp_frame, local->uloop[0].dev);
++		//ieee80211_subif_start_xmit(uloop_temp_frame, local->uloop_open_vif.dev);
++		// If the ULOOP_Open network isn't enable, the use the first vif created to transmit.
++		if (local->uloop_open_vif.vif_enable)
++			ieee80211_subif_start_xmit(uloop_temp_frame, local->uloop_open_vif.dev);
++		else
++			ieee80211_subif_start_xmit(uloop_temp_frame, local->uloop[0].dev);
++
++		if (msg_debug) {
++			printk(KERN_DEBUG "ULOOP_TEMP_FRAME Sent to mac80211 ------------\n");
++		}
++
++		if (msg_debug) {
++			printk(KERN_DEBUG "More Frame to send?\n");
++		}
++
++		for (i = 0; i < MAX_STA_NUMBER; i++) {
++			if ( !skb_queue_empty(&local->uloop_skb_queue[i]) )
++			{
++				if (msg_debug) {
++					printk(KERN_DEBUG "local->Uloop_skb_queue NOT EMPTY\n");
++					printk(KERN_DEBUG "local->Uloop_skb_queue lenght: %d\n", skb_queue_len(&local->uloop_skb_queue[i]));
++					printk(KERN_DEBUG "Tasklet_Scheduled\n");
++				}
++				tasklet_schedule(&local->tx_pending_uloop_tasklet);
++				break;
++			}
++			else {
++				if (msg_debug) {
++					printk(KERN_DEBUG "local->Uloop_skb_queue EMPTY\n");
++				}
++			}
++		}
++
++		//kfree_skb(uloop_temp_frame);
++
++	}
++	if (create_uloop_frame == 1)
++	{
++		/* Since there's only one STA queue with frames to transmit, we send the first frame of
++		 * this STA queue as a normal Ethernet frame to the mac80211.
++		 */
++		if (msg_debug) {
++			printk(KERN_DEBUG "Not necessary to create ULOOP_TEMP_FRAME. Send as ethernet frame.\n");
++		}
++
++		// Get the index for this virtual interface
++		i = uloop_info[0].pos_uloop_skb_queue;
++
++		if ( !skb_queue_empty(&local->uloop_skb_queue[i])){
++			work_frame = __skb_dequeue(&local->uloop_skb_queue[i]);
++			size = local->uloop_skb_queue[i].qlen;
++		}
++
++		info = IEEE80211_SKB_CB(work_frame);
++		memset(info, 0, sizeof(*info));
++
++		// If the ULOOP_Open network isn't enable, the use the first vif created to transmit.
++		if (local->uloop_open_vif.vif_enable)
++			ieee80211_subif_start_xmit(work_frame, local->uloop_open_vif.dev);
++		else
++			ieee80211_subif_start_xmit(work_frame, local->uloop[0].dev);
++
++		if (msg_debug) {
++			printk(KERN_DEBUG "More Frames to send? %d\n", size);
++		}
++		if (size > 0)
++		{
++			tasklet_schedule(&local->tx_pending_uloop_tasklet);
++			if (msg_debug) {
++				printk(KERN_DEBUG "YES - tasklet_schedule\n");
++			}
++		}
++	}
++
++	if (msg_debug && create_uloop_frame == 0)
++		printk(KERN_DEBUG "No frames on the STA queues!\n");
++out:
++	if (msg_debug)
++		printk(KERN_DEBUG "No ULOOP TEMP FRAME created.");
++}
++
++/**
++ * esm_fragment - Make the Superframe
++ * @param local
++ * 	information local device
++ * @param skb
++ * 	frame to be transmitted, in this case will be the temporary uloop frame
++ * @param hdrlen
++ * 	length of the header on the frame
++ */
++
++int esm_fragment (struct ieee80211_local *local, struct sk_buff *skb, int hdrlen)
++{
++	struct sk_buff *tail = skb, *tmp;
++	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
++	struct uloop_frame uloop_info[MAX_STA_NUMBER];
++	int finish = 0;
++	u16 cb_temp;
++	int pos = hdrlen;
++	u8 id = 0;
++	u16 length = 0;
++	int length_total = 0;
++	int sub_slot = 6;
++	int i, index = 0, next = 0, size = 0;
++	int only_one = 0;
++	u16 cb_teste;
++	int msg_debug = 0;
++	int totalTokens = 0;
++	int vif = -1;
++	int m_level = MODELATION_LEVEL; // NEED TO GET THIS VALUE FROM SOMEWHERE. THIS VALUE IS THE LEVEL OF MODULATION
++
++	/* ULOOP Fragmentation */
++
++	while (!finish)
++	{
++		memcpy(&id, skb->data + pos, sizeof(id));
++		id = (id >> 4);
++		memcpy(&cb_temp, skb->data + pos, sizeof(cb_temp));
++		if (msg_debug) {
++			printk(KERN_DEBUG "CB from %d: %d\n", id, cb_temp);
++		}
++		length = (cb_temp << 5);
++		length = (length >> 5);
++
++		uloop_info[index].id = id;
++		uloop_info[index].length = length;
++		uloop_info[index].pos = pos + sizeof(cb_temp);
++		uloop_info[index].rem = length;
++		uloop_info[index].cb = cb_temp;
++
++		vif = find_index_based_on_id(local, id);
++
++		if (vif == -1)
++			return -1;
++		totalTokens += local->uloop[vif].token;
++		if (msg_debug) {
++			printk(KERN_DEBUG "CB from %d: %d\n", id, uloop_info[index].cb);
++		}
++		length_total += length + sizeof(cb_temp);
++		if ( skb->len - hdrlen <= length_total) {
++
++			/* If exist only one vif, why flag is not NOTFRAG??
++			 * This is because only one frame will be transmitted,
++			 * so we don't need to do ULOOP fragmentation.
++			 */
++			if (msg_debug) {
++				printk(KERN_DEBUG "No more frames to read");
++			}
++			pos += length + sizeof(cb_temp);
++			if (msg_debug) {
++				printk(KERN_DEBUG "Pos: %d", pos);
++				printk(KERN_DEBUG "SKB len: %d", skb->len);
++				printk(KERN_DEBUG "hdrlen: %d", hdrlen);
++			}
++			only_one ++;
++			finish = 1;
++		} else {
++			if (msg_debug) {
++				printk(KERN_DEBUG "More frames to read: %d", skb->len);
++			}
++			pos += length + sizeof(cb_temp);
++			if (msg_debug) {
++				printk(KERN_DEBUG "Pos: %d", pos);
++			}
++			finish = 0;
++			only_one ++;
++			//info->uloop.ack[index].id = index;
++			//info->uloop.ack[index].ack = 0;
++		}
++		index ++;
++	}
++	/* if exists only one frame from a vif, the frame is ready to be sent. */
++	if (only_one == 1)
++		goto pass;
++	else
++		info->uloop.sta_served_uloop = only_one;
++
++	/*Calculation of the number of bits to be transmitted for each user by every OFDM symbol*/
++	//ToDo: If softFPU is installed and is possible to use, then this if can be removed.
++	if (totalTokens > 1000)
++		totalTokens = totalTokens/1000;
++	else
++		totalTokens = 1;
++
++	if (msg_debug) {
++		printk(KERN_DEBUG "totalTokens: %d", totalTokens);
++	}
++
++	for(i = 0; i < only_one; i++) {
++		//uloop_info[i].vif_bits = local->uloop[i].queues * m_level - sizeof(cb_temp);
++		//uloop_info[i].vif_bits = local->uloop[i].queues * MODELATION_LEVEL - sizeof(cb_temp);
++		//if (local->uloop[i].token != 0)
++		//{
++		vif = find_index_based_on_id(local, uloop_info[i].id);
++		uloop_info[i].vif_bits = (int) (((1 + ((local->uloop[vif].token-1)/totalTokens))*sub_slot)/1000);
++		//ToDo: If softFPU is installed and is possible to use, then this if can be removed.
++		if (uloop_info[i].vif_bits == 0)
++			uloop_info[i].vif_bits = 1;
++
++		uloop_info[i].vif_bits = (uloop_info[vif].vif_bits * m_level) - sizeof(cb_temp);
++		if (msg_debug) {
++			printk(KERN_DEBUG "VIF_BITS: %d", uloop_info[i].vif_bits);
++		}
++		//}
++		//ACK STUFF...
++		//info->uloop.ack[i].id = -1;
++		//info->uloop.ack[i].ack = 0;
++	}
++
++	/*MAKE THE ULOOP HEADER*/
++
++	for (i = 0; i<index; i++) {
++		uloop_info[i].cb = (uloop_info[i].cb >> 11);
++		//uloop_info[i].cb = (uloop_info[i].cb |  1);
++		uloop_info[i].cb = (uloop_info[i].cb << 11);
++		uloop_info[i].cb = (uloop_info[i].cb | uloop_info[i].vif_bits);
++		uloop_info[i].eod = 0;
++	}
++
++	finish = 0;
++
++	/* FRAGMENTATION STUFF */
++	if (msg_debug) {
++		printk(KERN_DEBUG "INDEX: %d", index);
++	}
++
++	while(finish < index) {
++
++		tmp = dev_alloc_skb(local->tx_headroom + 1600 + IEEE80211_ENCRYPT_HEADROOM + IEEE80211_ENCRYPT_TAILROOM);
++		if (!tmp) {
++			printk(KERN_DEBUG "LOW MEM - EXITING ULOOP FRAGMENTATION.\n");
++			return -ENOMEM;
++		}
++		tail->next = tmp;
++		if (next == 1)
++			tmp->prev = tail;
++		tail = tmp;
++		skb_reserve(tmp, local->tx_headroom + IEEE80211_ENCRYPT_HEADROOM);
++		memcpy(tmp->cb, skb->cb, sizeof(tmp->cb));
++		skb_copy_queue_mapping(tmp, skb);
++		tmp->priority = skb->priority;
++		tmp->dev = skb->dev;
++		memcpy(skb_put(tmp, hdrlen), skb->data, hdrlen);
++
++		size = 0;
++		next = 0;
++		if (msg_debug) {
++			printk(KERN_DEBUG "NEW SUPERFRAME!\n");
++		}
++		while(next == 0) {
++
++			for (i = 0; i < index; i++) {
++				if (!uloop_info[i].eod){
++					/*
++					 * The payload don't have been complete transmitted.
++					 * Continue to apply the esm technique.
++					 * If there's just a part of one frame to be transmitted, all the others frame
++					 * have already been inserted on a Superframe Payload. Send this part of
++					 * frame with only one CB.
++					 */
++					if ((uloop_info[i].rem <= uloop_info[i].vif_bits) || (((index-finish) == 1) && next == 0) )  {
++						/*
++						 * The remaining is less than the number of bits to read.
++						 * In this case, it's only necessary to read the remaining.
++						 * If the total length of the super frame is more than 1500, then
++						 * it's necessary to create another superframe.
++						 */
++						if (size + sizeof(uloop_info[i].cb) + uloop_info[i].rem  <= 1500) {
++							/*
++							 * Set the CB with EOD = 1;
++							 */
++							uloop_info[i].cb = (uloop_info[i].cb >> 11);
++							uloop_info[i].cb = (uloop_info[i].cb | 1);
++							uloop_info[i].cb = (uloop_info[i].cb << 11);
++							uloop_info[i].cb = (uloop_info[i].cb | uloop_info[i].rem);
++							memcpy(&cb_teste, &uloop_info[i].cb, sizeof(uloop_info[i].cb));
++							if (msg_debug) {
++								printk(KERN_DEBUG "CB_teste: %d\n", cb_teste);
++								printk(KERN_DEBUG "sizeof(cb_teste): %d\n", sizeof(cb_teste));
++								printk(KERN_DEBUG "CB SUPER-FRAME - FIM: %d\n", uloop_info[i].cb);
++							}
++							cb_teste = cpu_to_le16(cb_teste);
++							memcpy(skb_put(tmp, sizeof(cb_teste)), &cb_teste, sizeof(cb_teste));
++							memcpy(skb_put(tmp, uloop_info[i].rem), skb->data + uloop_info[i].pos, uloop_info[i].rem);
++							uloop_info[i].pos += uloop_info[i].rem;
++							if (msg_debug) {
++								printk(KERN_DEBUG "pos: %d", uloop_info[i].pos);
++								printk(KERN_DEBUG "rem: %d", uloop_info[i].rem);
++							}
++							size += uloop_info[i].rem + sizeof(uloop_info[i].cb);
++							if (msg_debug) {
++								printk(KERN_DEBUG "size: %d", size);
++							}
++							uloop_info[i].rem = 0;
++							next = 1;
++							uloop_info[i].eod = 1;
++							finish ++;
++							break;// TESTE 3-06-2013
++						} else {
++							next = 1;
++							break;
++						}
++					} else {
++						/*
++						 * In this case, the length of the payload is higher than the number
++						 * of bits to read. Just do the esm technique.
++						 * If the length of the super frame is higher than 1500, it's necessary
++						 * to create another super frame.
++						 */
++						if (size + sizeof(uloop_info[i].cb) + uloop_info[i].vif_bits  <= 1500) {
++							if (msg_debug) {
++								printk(KERN_DEBUG "CB SUPER-FRAME: %d", uloop_info[i].cb);
++							}
++							memcpy(&cb_teste, &uloop_info[i].cb, sizeof(uloop_info[i].cb));
++
++							if (msg_debug) {
++								printk(KERN_DEBUG "CB_teste: %d\n", cb_teste);
++								printk(KERN_DEBUG "sizeof(cb_teste): %d\n", sizeof(cb_teste));
++							}
++
++							cb_teste = cpu_to_le16(cb_teste);
++							memcpy(skb_put(tmp, sizeof(cb_teste)), &cb_teste, sizeof(cb_teste));
++							memcpy(skb_put(tmp, uloop_info[i].vif_bits), skb->data + uloop_info[i].pos, uloop_info[i].vif_bits);
++							uloop_info[i].pos += uloop_info[i].vif_bits;
++							uloop_info[i].rem -= uloop_info[i].vif_bits;
++
++							if (msg_debug) {
++								printk(KERN_DEBUG "pos: %d", uloop_info[i].pos);
++								printk(KERN_DEBUG "rem: %d", uloop_info[i].rem);
++							}
++							size += uloop_info[i].vif_bits + sizeof(uloop_info[i].cb);
++							if (msg_debug) {
++								printk(KERN_DEBUG "size: %d", size);
++							}
++						} else {
++							next = 1;
++							break;
++						}
++					}
++				}
++			}
++			if (size >= 1500)
++				next = 1;
++		}
++	}
++	if (msg_debug) {
++		do {
++			printk(KERN_DEBUG "SUPER-FRAME2 \n");
++		} while(skb = skb->next);
++	}
++pass:
++	if (msg_debug) {
++		printk(KERN_DEBUG "ULOOP Fragmentation done!");
++	}
++	return 0;
++}
++
++/*
++ * --------------------------------------------------------------------------------
++ * --------------------------- Test SuperFrame functions ---------------------------
++ * --------------------------------------------------------------------------------
++ */
++
++/**
++ * teste_skb - Function to test the Superframe.
++ *  Show the values of the Control bits field.
++ * @param skb
++ * 	frame where is a superframe
++ * @param hdrlen
++ * 	length of header
++ */
++void teste_skb( struct sk_buff *skb, int hdrlen) {
++	u16 cb;
++	u16 id, eod;
++	u16 length;
++	u16 teste;
++	int finish, pos = 0, i = 1;
++	int f = 1;
++	struct ieee80211_hdr *hdr;
++
++	do {
++		finish = 0;
++		printk(KERN_DEBUG "------------------Test Superframe--------------------\n");
++		hdr = (struct ieee80211_hdr *) skb->data;
++
++		printk(KERN_DEBUG "SUPER-FRAME %d length: %d\n", i, skb->len);
++		f = 0;
++		pos = 0;
++		if ( i != 1) {
++			do {
++				memcpy(&cb, skb->data + hdrlen + pos, sizeof(cb));
++				cb = le16_to_cpu(cb);
++				id = cb >> 12;
++				eod = (cb << 4);
++				eod = (eod >> 15);
++				length = (cb << 5);
++				length = (length >> 5);
++				printk(KERN_DEBUG "CB: %d ID: %d EOD: %d Length: %d", cb, id, eod, length);
++				memcpy(&teste,skb->data + hdrlen + pos + 2, sizeof(cb));
++				printk(KERN_DEBUG "DATA: %s\n", byte_to_binary(teste));
++				pos = pos + (int)length + 2;
++				if ((pos + hdrlen >= 1500) || (pos + hdrlen >= skb->len))
++					finish = 1;
++				f++;
++			} while (!finish);
++		}
++		printk(KERN_DEBUG "------------------Test Superframe--------------------\n");
++		i++;
++	} while (skb = skb->next);
++
++}
++
++/*void teste_skb2( struct sk_buff *skb, int hdrlen) {
++	u16 cb;
++	u16 id, eod;
++	u16 length;
++	int finish, pos = 0, i = 1;
++	int f = 1;
++	//struct sk_buff *skb2 = NULL;
++	//skb2 = skb_copy(skb, GFP_ATOMIC);
++	struct ieee80211_hdr *hdr;
++	//int k = 0;
++	printk(KERN_DEBUG "------------------Test2--------------------\n");
++	do {
++		finish = 0;
++		printk(KERN_DEBUG "------------------Test Superframe--------------------\n");
++		printk(KERN_DEBUG "SUPER-FRAME %d length: %d\n", i, skb->len);
++		hdr = (struct ieee80211_hdr *) skb->data;
++
++		f = 0;
++		pos = 0;
++		if ( i != 0) {
++			do {
++				memcpy(&cb, skb->data + hdrlen + pos, sizeof(cb));
++				cb = le16_to_cpu(cb);
++				id = cb >> 12;
++				eod = (cb << 4);
++				eod = (eod >> 15);
++				length = (cb << 5);
++				length = (length >> 5);
++				printk(KERN_DEBUG "CB: %d ID: %d EOD: %d Length: %d", cb, id, eod, length);
++				pos = pos + (int)length + 2;
++				if ((pos + hdrlen >= 1500) || (pos + hdrlen >= skb->len))
++					finish = 1;
++				f++;
++			} while (!finish);
++		}
++		printk(KERN_DEBUG "------------------Test Superframe--------------------\n");
++		i++;
++	} while ((skb = skb->next));
++
++}
++*/
++/*
++ * --------------------------------------------------------------------------------
++ * --------------------------- ACK SuperFrame functions ---------------------------
++ * --------------------------------------------------------------------------------
++ */
++
++/**
++ * start_timer_ACK_uloop - Start timer to for the ACK.
++ *  Start the timer to the GW wait for the ACK of a Superframe sent by the stations
++ * @param local
++ * 	info about the local device
++ * @param origskb
++ * 	frame to be fragmented
++ */
++
++void start_timer_ACK_uloop(struct ieee80211_local *local, struct sk_buff *origskb)
++{
++	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(origskb);
++	struct ieee80211_supported_band *sband;
++	struct ieee80211_rate *rate = NULL;
++	struct sk_buff *saved_skb;
++	unsigned long flags;
++	//struct ieee80211_rx_status *status = IEEE80211_SKB_RXCB(origskb);
++	//struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)origskb->data;
++	//struct ieee80211_ack *ack_hdr;
++
++	//int rate_idx;
++	//static int err_count = 0;
++
++	WARN_ON_ONCE(softirq_count() == 0);
++
++	sband = local->hw.wiphy->bands[info->band];
++
++	timer->local = local;
++
++	/*
++	 * make a copy of the original skb;
++	 * origskb will be freed before returning
++	 */
++ 	saved_skb = skb_copy(origskb, GFP_ATOMIC);
++
++	spin_lock_irqsave(&timer->qlock, flags);
++
++	if (likely(skb_queue_empty(&timer->coop_queue))) {
++
++		__skb_queue_head(&timer->coop_queue, saved_skb);
++		spin_unlock_irqrestore(&timer->qlock, flags);
++	}
++	/*
++	 * Shouldn't get here often!
++	 * There was another data frame before the timer expired
++	 */
++
++	else {
++		//struct sk_buff *last_skb;
++		//last_skb = skb_peek_tail(&timer->coop_queue);
++		/*
++		if (ieee80211_has_retry(hdr->frame_control)) {
++			/ * drop a retransmission * /
++			//if (!memcmp(&hdr->seq_ctrl, &((struct ieee80211_hdr *)last_skb->data)->seq_ctrl, sizeof(__le16))) {
++				spin_unlock_irqrestore(&timer->qlock, flags);
++				goto drop;
++			//}
++		//}*/
++		__skb_queue_tail(&timer->coop_queue, saved_skb);
++		spin_unlock_irqrestore(&timer->qlock, flags);
++	}
++	rate = &sband->bitrates[info->control.rates[0].idx];
++	timer_setup(timer, info, rate, local, origskb);
++
++//drop:
++	//dev_kfree_skb(origskb);
++	return;
++}
++
++/**
++ * compute_duration - Compute the duration for the timer
++ *  Compute the duration for the timer for each Superframe.
++ * @param local
++ * 	info about the local device
++ * @param origskb
++ * 	frame to be fragmented
++ */
++
++int compute_duration(struct ieee80211_local *local, struct sk_buff *skb)
++{
++	int dur = 0, erp = 0;
++	bool short_preamble = false;
++	struct ieee80211_rate *rate;
++	struct ieee80211_supported_band *sband;
++	struct ieee80211_tx_info *frame_txctl = IEEE80211_SKB_CB(skb);
++	struct ieee80211_hdr *hdr;
++	int frame_len, fragnum, difs;
++	int sifs, slot_time;
++	u16 sc;
++
++	hdr = (struct ieee80211_hdr *) skb->data;
++	sc = le16_to_cpu(hdr->seq_ctrl);
++	fragnum = sc & IEEE80211_SCTL_FRAG;
++	printk(KERN_DEBUG "Fragnum in compute duration: %d\n", fragnum);
++
++	frame_len = skb->len;
++	sband = local->hw.wiphy->bands[local->hw.conf.channel->band];
++	rate = &sband->bitrates[frame_txctl->control.rts_cts_rate_idx];
++	erp = rate->flags & IEEE80211_RATE_ERP_G;
++
++	/* RTS duration */
++	/* DIFS = SIFS + 2 * Slot time */
++	/*
++	Standard 	Slot time (µs) 	DIFS (µs)
++	IEEE 802.11b 	20 			50
++	IEEE 802.11a 	9 			34
++	IEEE 802.11g 	9 or 20 	28 or 50
++	*/
++	sifs = 10;
++	slot_time = 20;
++
++	/*ToDo: How to get the slot_time??*/
++
++	difs = sifs + 2 * slot_time;
++	dur = ieee80211_frame_duration(local, 10, rate->bitrate, erp, short_preamble)
++			- sifs + difs;
++
++	/* CTS duration */
++	dur += ieee80211_frame_duration(local, 10, rate->bitrate, erp, short_preamble);
++
++	/* Data frame duration */
++	dur += ieee80211_frame_duration(local, frame_len, rate->bitrate, erp, short_preamble);
++
++	/* ACK duration */
++	if (fragnum == 0) {
++		printk(KERN_DEBUG "Served STA: %d\n", frame_txctl->uloop.sta_served_uloop);
++		dur += (ieee80211_frame_duration(local, 10, rate->bitrate,
++					erp, short_preamble)* frame_txctl->uloop.sta_served_uloop);
++	}
++
++	printk(KERN_DEBUG "Compute duration: %d\n", dur);
++	return dur;
++}
++
++/**
++ * retransmitt_uloop - Retransmitt a Superframe
++ *  Send a Superframe to the driver
++ * @param skb
++ * 	Superframe
++ * @param local
++ * 	info about the local device
++ */
++
++void retransmitt_uloop(struct sk_buff *skb, struct ieee80211_local *local)
++{
++	//ToDo: It's necessary check which stations fail to send a ACK.
++	printk(KERN_DEBUG "------------------Retransmit SF--------------------\n");
++	//drv_tx(local,skb);
++}
++
++void received_ACK_sf(struct sk_buff *ack_skb)
++{/*
++	struct sk_buff *skb = skb_peek(&timer->coop_queue);
++	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
++	u8 cb;
++	int id, i, acked=0;
++	int hdrlen = ieee80211_hdrlen(((struct ieee80211_hdr *)skb->data)->frame_control);
++
++	memcpy(&cb, ack_skb->data + hdrlen , sizeof(cb));
++	id = le16_to_cpu(cb);
++	info->uloop.ack[id].ack = 1;
++	info->uloop.ack[id].id = id;
++	for (i=0; i < MAX_STA_NUMBER; i++)
++	{
++		if ( info->uloop.ack[i].ack == 1)
++			acked++;
++	}
++	if (acked == info->uloop.sta_served_uloop)
++		cancel_timer_ACK_uloop(skb);
++*/
++
++}
++
++void cancel_timer_ACK_uloop(struct sk_buff *skb)
++{
++	//ToDo: We have to implement the code to cancel the timer if the GW already
++	//received all the ACK.
++}
++
++/*
++ * --------------------------------------------------------------------------------
++ * ---------- Netlink functions (internal interface between CAC and ESM) ----------
++ * --------------------------------------------------------------------------------
++ */
++
++/**
++ * init_netlink
++ * When mac80211 is load, this function is called and creates two netlink sockets.
++ * One socket if used during the RM initialization and the other if to receive a
++ * request from CAC.
++ */
++void init_netlink(void)
++{
++	nl_sk_init = netlink_kernel_create(&init_net,NETLINK_INIT_ESM,0, nl_init_esm,NULL, THIS_MODULE);
++	if (!nl_sk_init)
++		printk (KERN_DEBUG "Unable to create a Netlink socket to RM\n");
++
++	nl_sk_cac = netlink_kernel_create(&init_net,NETLINK_CAC_ESM,0, nl_compute_request_from_CAC,NULL, THIS_MODULE);
++	if (!nl_sk_cac)
++		printk (KERN_DEBUG "Unable to create a Netlink socket to CAC\n");
++}
++
++/**
++ * nl_compute_request_from_CAC
++ * Function called when a message from CAC arrives.
++ * This message contains the request from an Station
++ * @param skb
++ * Message from CAC
++ */
++void nl_compute_request_from_CAC (struct sk_buff *skb)
++{
++	struct nlmsghdr *nlh = NULL;
++	struct cac_message cac;
++	int id = 0;
++	if(skb == NULL) {
++		printk("skb is NULL \n");
++			return ;
++	}
++	nlh = (struct nlmsghdr *)skb->data;
++	memcpy(&cac,NLMSG_DATA(nlh),sizeof(cac));
++	printk(KERN_INFO "%s: received netlink message.", __FUNCTION__);
++
++	if (check_resources(skb,nlh))
++	{
++		id = create_id(cac.cryptoid);
++		if (add_id(id)) {
++			printk(KERN_DEBUG "ID ESM: %d\n", id);
++			requestCompute.id = id;
++			requestCompute.token = cac.token;
++			memcpy(requestCompute.cryptoid, cac.cryptoid, CRYPTO_ID_SIZE);
++			memcpy(requestCompute.macAddress, cac.macAddress, ETH_ALEN);
++			free_sta_slot--;
++		}
++		else {
++			printk(KERN_DEBUG "Problem adding ID: %d\n", id);
++		}
++	}
++	else
++	{
++		clean_requestCompute();
++	}
++}
++
++/**
++ * nl_init_esm - netlink socket for initialization of ESM
++ *  Receive a message from RM that indicates if ESM will work as an Access Point
++ *  or as a Station
++ * @param skb
++ * 	message from RM
++ */
++void nl_init_esm (struct sk_buff *skb)
++{
++	struct nlmsghdr *nlh = NULL;
++	struct cac_message cac;
++	int mode = 0;
++
++	if(skb == NULL) {
++		printk("skb is NULL \n");
++		return ;
++	}
++	nlh = (struct nlmsghdr *)skb->data;
++	memcpy(&cac,NLMSG_DATA(nlh),sizeof(cac));
++
++	nlh = (struct nlmsghdr *)skb->data;
++	memcpy(&mode,NLMSG_DATA(nlh),sizeof(mode));
++	if (!mode)
++	{
++		printk(KERN_DEBUG "ESM mode: Disabled.\n");
++		ESM_working_mode = ESM_OFF_MODE;
++	}
++	if (mode == 1)
++	{
++		//Gateway mode
++		printk(KERN_DEBUG "ESM mode: Gateway.\n");
++		ESM_working_mode = ESM_GATEWAY_MODE;
++		nl_reply(skb,nlh,1, nl_sk_init);
++	}
++	if (mode == 2)
++	{
++		//Station mode
++		printk(KERN_DEBUG "ESM mode: Station.\n");
++		ESM_working_mode = ESM_STATION_MODE;
++		nl_reply(skb,nlh,2, nl_sk_init);
++	}
++}
++/**
++ * nk_reply - netlink socket - reply to RM
++ * Send a reply to RM. This function is used the during the ESM initializatio
++ * and also to reply a request.
++ * @param skb
++ * frame to send
++ * @param nlh
++ * netlink message header
++ * @param resp
++ * resp to send
++ * @param nl_sk
++ * netlink socket
++ */
++void nl_reply (struct sk_buff *skb, struct nlmsghdr *nlh, int resp, struct sock *nl_sk)
++{
++	u8 * payload = NULL;
++	int   length;
++	int   seq;
++	pid_t pid;
++	struct sk_buff *rskb = NULL;
++	char data_string[5];
++	sprintf(data_string,"%d",resp);
++
++	if (nl_sk) {
++		pid = nlh->nlmsg_pid;
++		length = nlh->nlmsg_len;
++		seq = nlh->nlmsg_seq;
++
++		rskb = alloc_skb( nlh->nlmsg_len, GFP_KERNEL );
++		if ( !rskb ) {
++			printk("\nknetlink_process: replies with the same socket_buffer\n");
++			*rskb = *skb;
++		} else {
++			skb_put( rskb, length );
++			//kfree_skb( skb );
++		}
++
++		nlh = (struct nlmsghdr *) rskb->data;
++		nlh->nlmsg_len = length;
++		nlh->nlmsg_pid = pid;
++		nlh->nlmsg_flags = 0;
++		nlh->nlmsg_type = 2;
++		nlh->nlmsg_seq   = seq++;
++		payload = NLMSG_DATA( nlh );
++
++		strlcpy(payload, data_string,nlh->nlmsg_len);
++		*(payload + strlen(data_string)) = '\0';
++		NETLINK_CB(rskb).pid = 0; //from kernel
++		netlink_unicast( nl_sk, rskb, pid, MSG_DONTWAIT );
++	} else {
++		printk(KERN_INFO "NETLINK SOCKET ERROR: Empty Socket.\n");
++	}
++}
++
++/**
++ * check_resources - check the available resources
++ * check if the request can be accepted or not based on the number of
++ * stations already connected and if the ID, computed for the request, already
++ * exist or not.
++ * @param skb
++ * netlink message
++ * @param nlh
++ * netlink message header
++ * @return
++ * 1 or 0 depending if the resquest was accepted or not.
++ */
++int check_resources(struct sk_buff *skb, struct nlmsghdr *nlh)
++{
++	struct cac_message cac;
++	int reply = 0, id = -1;
++	int msg_debug = 0;
++	nlh = (struct nlmsghdr *)skb->data;
++	memcpy(&cac,NLMSG_DATA(nlh),sizeof(cac));
++
++	if (msg_debug) {
++		printk(KERN_DEBUG "FREEBITS %d", free_bits);
++		printk(KERN_DEBUG "FREE STA SLOTS %d", free_sta_slot);
++	}
++	id = create_id(cac.cryptoid);
++	if (free_sta_slot > 0 && !id_already_exist(id))
++	{
++		nl_reply(skb, nlh, 1, nl_sk_cac);
++		reply = 1;
++	}
++	else {
++		nl_reply(skb, nlh, 0, nl_sk_cac);
++		printk (KERN_DEBUG "NOT FREE STA SLOTS OR ID GENERATED ALREADY EXIST!");
++	}
++	return reply;
++}
++
++/**
++ * create_id - create ID for the station
++ * Compute the ID for the station. This computation is done by doing XOR for each 8 bits of
++ * the cryptoID
++ * @param rawbytes
++ * CryptoID
++ * @return
++ * ID computed
++ */
++int create_id(uint8_t rawbytes[])
++{
++	int i = 0;
++	uint8_t XOR = 0;
++	uint8_t v1 = 0;
++	uint8_t v2 = 0;
++
++	for(i = 0; i < 8 ;i++){
++		XOR ^= rawbytes[i];
++	}
++
++	v1 = (XOR >> 4);
++	v2 = (XOR << 4);
++	v2 = v2 >> 4;
++	XOR = v1 ^ v2;
++
++	return (int)XOR;
++}
++
++/**
++ * find_index_based_on_id - Search for the index for a given ID
++ * Search the position inside the struct uloop where all the informations
++ * for this station/ID are store.
++ * @param local
++ * struct where all information of mac80211 is.
++ * @param id
++ * ID of the station
++ * @return
++ * index
++ */
++
++int find_index_based_on_id(struct ieee80211_local *local, int id) {
++	int i = 0, index = -1;
++	for (i = 0; i < MAX_STA_NUMBER; i++)
++	{
++		if (local->uloop[i].id == id) {
++			index = i;
++			break;
++		}
++	}
++	return index;
++}
++
++/**
++ * id_already_exist - Check if a given ID already exist
++ * Check if the ID was already assign to another station.
++ * @param id
++ * ID of the Station
++ * @return
++ * 1 if exist, 0 if not
++ */
++int id_already_exist(int id) {
++	int i = 0, found = 0;
++	for (i = 0; i < MAX_STA_NUMBER; i++)
++	{
++		if (id_sta[i] == id)
++			found = 1;
++	}
++	return found;
++}
++
++/**
++ * add_id - add a new ID
++ * @param id
++ * ID to add
++ * @return
++ * 1 if added, 0 if all the available positions are assigned
++ */
++int add_id(int id) {
++	int i = 0, done = 0;
++	for (i = 0; i < MAX_STA_NUMBER; i++)
++	{
++		if (id_sta[i] == -1) {
++			id_sta[i] = id;
++			done = 1;
++			break;
++		}
++	}
++	return done;
++}
++
++/**
++ * remove_id - remove id
++ * @param id
++ * ID to remove
++ * @return
++ * 1 if removed, 0 if not found
++ */
++int remove_id(int id) {
++	int i = 0, done = 0;
++	for (i = 0; i < MAX_STA_NUMBER; i++)
++	{
++		if (id_sta[i] == id) {
++			id_sta[i] = -1;
++			done = 1;
++			break;
++		}
++	}
++	return done;
++}
++/**
++ * init_id
++ * initialize the ID array with -1 values.
++ */
++void init_ESM_variables(void) {
++	int i = 0;
++	// ID initialization
++	for (i = 0; i < MAX_STA_NUMBER; i++)
++	{
++		id_sta[i] = -1;
++	}
++	// RequestCompute initialization
++	clean_requestCompute();
++
++	ESM_working_mode = ESM_OFF_MODE;
++}
++
++/**
++ * find_vif_assigned_to_sta
++ * search the vif assigned for the given station and
++ * return the position, inside local->uloop, where the vif is.
++ * @param local
++ * information about the local device
++ * @param macAddress
++ * the mac address of the station
++ * @return
++ * the position, inside local->uloop, where the vif for the station is.
++ */
++int find_vif_assigned_to_sta(struct ieee80211_local *local, u8 *macAddress) {
++
++	int i, found = 0;
++
++	for ( i = 0; i < MAX_STA_NUMBER; i++)
++	{
++		/* compare address and run code only if it matches */
++		if (memcmp(local->uloop[i].macAddress, macAddress, ETH_ALEN) == 0){
++			found = 1;
++			return i;
++		}
++	}
++	return -1;
++}
++
++/**
++ * clean_requestCompute
++ * clean all the values inside the struct requestCompute.
++ */
++void clean_requestCompute(void) {
++
++	requestCompute.id = -1;
++	requestCompute.token = 0;
++	memset(requestCompute.macAddress, 0, ETH_ALEN);
++	memset(requestCompute.cryptoid, 0, CRYPTO_ID_SIZE);
++}
++
++
++#endif /* ULOOP */
+diff -rupN compat-wireless-2011-11-15-original/net/mac80211/uloop-esm.h compat-wireless-2011-11-15/net/mac80211/uloop-esm.h
+--- compat-wireless-2011-11-15-original/net/mac80211/uloop-esm.h	1970-01-01 01:00:00.000000000 +0100
++++ compat-wireless-2011-11-15/net/mac80211/uloop-esm.h	2013-10-29 14:37:40.156407685 +0000
+@@ -0,0 +1,152 @@
++///**
++// * @brief Elastic Spectrum Manager - Global headers for Elastic Spectrum Manager (Gateway Mode),
++// * 	task 3.2 / prototype version 4.0.0
++// */
++///**
++// * @file uloop-esm.h
++// * @author Luis Lopes (SITILABS, ULHT)
++// * @date June, 2013
++// */
++
++/*
++ ============================================================================
++ Name        : uloop-esm.h
++ Author      : Luis Lopes (SITILABS, ULHT)
++ Version     : 4.0.0
++ Copyright   : ULOOP 2013
++ Description : Global headers for Elastic Spectrum Manager (Gateway Mode),
++  	  	  	   task 3.2 / prototype version 4.0.0
++ Date		 : June 2013
++ ============================================================================
++ */
++
++#include <linux/kernel.h>
++#include <linux/netdevice.h>
++#include <linux/skbuff.h>
++#include <net/mac80211.h>
++#include <linux/netlink.h>
++#include <net/sock.h>
++
++#include "ieee80211_i.h"
++#include "driver-ops.h"
++#include "uloop-esm-rx.h"
++
++#ifndef ULOOP_ESM_H
++#define ULOOP_ESM_H
++
++#define TOTALBITS (6)
++#define MODELATION_LEVEL 6;
++
++// ACK NOT FULLY IMPLEMENTED
++#define ACK_MECHANISM 0; //1 - Enable the ACK mechanism on ESM; 0 - Disable
++
++//! uloop_frame struct
++/*! this struct will be used for the ESM fragmentation */
++struct uloop_frame {
++	int vif_bits; /*!< Number of bits to read */
++	int length; /*!< length of the payload */
++	int pos; /*!< position on the payload */
++	int rem; /*!< remaining payload */
++	u16 cb; /*!< ESM control bits */
++	int id; /*!< interface identification */
++	int eod; /*!< End of data flag */
++	int token;
++	int pos_uloop_skb_queue;  /*!< Position on uloop_skb_queue */
++};
++
++extern int ESM_working_mode;
++
++enum ESM_mode {
++	ESM_OFF_MODE = 0,
++	ESM_GATEWAY_MODE = 1,
++	ESM_STATION_MODE = 2
++};
++
++/**
++ * uloop_is_sf - check if type is IEEE80211_FTYPE_DATA and IEEE80211_STYPE_DATA_CFPOLL is set
++ * @fc: frame control bytes in little-endian byteorder
++ */
++static inline int uloop_is_sf(__le16 fc)
++{
++	return (fc & cpu_to_le16(IEEE80211_FCTL_FTYPE | IEEE80211_STYPE_DATA_CFPOLL)) ==
++			cpu_to_le16(IEEE80211_FTYPE_DATA | IEEE80211_STYPE_DATA_CFPOLL);
++}
++
++/**
++ * uloop_is_ack_sf - check if type is IEEE80211_FTYPE_DATA and IEEE80211_STYPE_DATA_CFACKPOLL is set
++ * @fc: frame control bytes in little-endian byteorder
++ */
++static inline int uloop_is_ack_sf(__le16 fc)
++{
++	return (fc & cpu_to_le16(IEEE80211_FCTL_FTYPE | IEEE80211_STYPE_DATA_CFPOLL)) ==
++			cpu_to_le16(IEEE80211_FTYPE_DATA | IEEE80211_STYPE_DATA_CFACKPOLL);
++}
++
++void print_bytes(const unsigned char *hash, size_t size);
++
++/*
++ *  Superframe Functions
++ */
++int compute_upper_limit_subs(int num_sta);
++void compute_token_to_bits(struct uloop_frame *uloop_info, int num_sta, int T_total);
++int assign_bits_to_sta(struct net_device *dev, enum nl80211_iftype type);
++void remove_bits_to_sta(struct net_device *dev);
++netdev_tx_t esm_get_frame(struct sk_buff *skb, struct net_device *dev);
++void make_uloop_temp_frame (struct ieee80211_local *local);
++int esm_fragment (struct ieee80211_local *local, struct sk_buff *skb, int hdrlen);
++void teste_skb( struct sk_buff *skb, int hdrlen);
++void teste_skb2( struct sk_buff *skb, int hdrlen);
++
++/*
++ * ACK Superframe
++ */
++
++//! uloop_sf struct
++/*! this struct will be used to know who ack a superframe */
++
++
++void start_timer_ACK_uloop(struct ieee80211_local *local, struct sk_buff *origskb);
++int compute_duration(struct ieee80211_local *local, struct sk_buff *skb);
++void retransmitt_uloop(struct sk_buff *skb, struct ieee80211_local *local);
++void received_ACK_sf(struct sk_buff *ack_skb);
++void cancel_timer_ACK_uloop(struct sk_buff *skb);
++
++/*
++ * Netlink interfaces
++ */
++
++#define NETLINK_INIT_ESM 21 // Internal interface to initialize the ESM as a GW, STA or off.
++#define NETLINK_CAC_ESM 22 // Internal interface to CAC (GW mode Only)
++
++#define CRYPTO_ID_SIZE 32
++#define MSG_SIZE NLMSG_SPACE(1024)
++
++//! cac_message
++/*! this struct will be used to receive information from CAC */
++struct cac_message {
++	uint8_t cryptoid[32];
++	//int cryptoid;
++	int token;
++	int trust_level;
++	int subchannels;
++	u8 macAddress[ETH_ALEN];
++};
++
++void init_netlink(void);
++extern void nl_compute_request_from_CAC (struct sk_buff *skb);
++extern void nl_init_esm (struct sk_buff *skb);
++void nl_reply (struct sk_buff *skb, struct nlmsghdr *nlh, int resp, struct sock *nl_sk);
++int check_resources(struct sk_buff *skb, struct nlmsghdr *nlh);
++//void netlink_test();
++int create_id(uint8_t rawbytes[]);
++int find_index_based_on_id(struct ieee80211_local *local, int id);
++int id_already_exist(int id);
++int add_id(int id);
++int remove_id(int id);
++void init_ESM_variables(void);
++
++int find_vif_assigned_to_sta(struct ieee80211_local *local, u8 *macAddress);
++void clean_requestCompute(void);
++
++#endif
++
+diff -rupN compat-wireless-2011-11-15-original/net/mac80211/uloop-esm-rx.c compat-wireless-2011-11-15/net/mac80211/uloop-esm-rx.c
+--- compat-wireless-2011-11-15-original/net/mac80211/uloop-esm-rx.c	1970-01-01 01:00:00.000000000 +0100
++++ compat-wireless-2011-11-15/net/mac80211/uloop-esm-rx.c	2013-07-31 14:32:30.173911221 +0100
+@@ -0,0 +1,277 @@
++
++/*
++ ============================================================================
++ Name        : uloop-esm-rx.c
++ Author      : Luis Lopes (SITILABS, ULHT), Hassan Osman (UniK)
++ Version     : 4.0.0
++ Copyright   : ULOOP 2013
++ Description : Elastic Spectrum Manager (Station Mode),
++  	  	  	   task 3.2 / prototype version 4.0.0
++ Date		 : June 2013
++ ============================================================================
++ */
++
++#include <linux/kernel.h>
++#include <linux/netdevice.h>
++#include <linux/skbuff.h>
++#include <net/mac80211.h>
++#include <linux/netlink.h>
++#include <net/sock.h>
++
++#include "uloop-esm.h"
++#include "uloop-esm-rx.h"
++
++#define MAC2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5]
++#define MACSTR "%02x:%02x:%02x:%02x:%02x:%02x"
++
++static struct sock *nl_sk_rm_crypto = NULL; // this is used for the netlink socket
++
++// This function is to convert the integer in bits. This function works up to 16 bits.
++const char *byte_to_binary_rx(int x)
++{
++    static char b[17];
++    int z;
++    b[0] = '\0';
++
++    for (z = 32768; z > 0; z >>= 1) {
++    	strcat(b, ((x & z) == z) ? "1" : "0");
++    }
++
++    return b;
++}
++
++/*
++ * Netlink Interface
++ */
++
++void nl_receive_cryptoid (struct sk_buff *skb)
++{
++	struct nlmsghdr *nlh = NULL;
++	int id = 0;
++    uint8_t cryptoid[32];
++
++    if(skb == NULL)
++	{
++		printk("nl_receive_cryptoid(): skb is NULL \n");
++		return ;
++    }
++
++    nlh = (struct nlmsghdr *)skb->data;
++    memcpy(&cryptoid,NLMSG_DATA(nlh),sizeof(cryptoid));
++    printk(KERN_INFO "%s: received netlink message payload from RM:", __FUNCTION__);
++	id = create_id(cryptoid);
++	printk(KERN_DEBUG "nl_receive_cryptoid(): the value of id is%d\n", id);
++}
++
++void init_netlink_station(void) {
++	// initialization of the netlink socket to receive cryptoid from RM
++	nl_sk_rm_crypto= netlink_kernel_create(&init_net, NETLINK_RM_CRYPTO,0, nl_receive_cryptoid,NULL, THIS_MODULE);
++}
++
++/*
++ * ESM Station code
++ */
++
++struct  sk_buff *defrag_sf_uloop(struct ieee80211_local *local, struct sk_buff *skb2) {
++
++	int User_ID = -1;// This is the user ID.
++	int new_ID = -1;
++	u16 cb;
++	u16 id, eod;
++	u16 length;
++	u16 teste;//LUIS
++	int finish, pos = 0, i = 0;
++
++	int seq_n = 0;
++	struct ieee80211_hdr *hdr = NULL;
++
++	int k = 0;
++	int length_int = 0;
++	int length_total = 1500; // Need to modify this later, previously this was 1500 I changed to 1300 because of skb_push
++	int done = 0; //LUIS
++	int hdrlen = 0;
++	struct sk_buff *clean_skb = NULL;
++	struct ieee80211_hdr *hdr_clean_skb; // This is for the header, we need to build a new header, Has
++	u16 sc;
++	int seq_frag = 0;
++	__le16 fc;//This variable for the Frame Control which is 2 bytes.[typedef __u16  __le16] (__le16 is used for endian dependent variable)
++	const __le16 morefrags = cpu_to_le16(IEEE80211_FCTL_MOREFRAGS);
++	int increm=0; // This is used to print out the position of the read payload
++
++
++	// Checking if an ID was assigned to this station
++
++	if(local->uloop_id_sta == -1) {
++		printk(KERN_DEBUG "ID for this station not defined!\n");
++		User_ID = 11; //ToDo: REMOVE - Just for testing.
++	}
++	else
++		User_ID = local->uloop_id_sta;
++
++	hdr = (struct ieee80211_hdr *)skb2->data; // This access to the header of the data
++	hdrlen = ieee80211_hdrlen(hdr->frame_control); // This should give back the header length (in our case should be 24, addr4 not used)
++
++	hdr_clean_skb = (struct ieee80211_hdr *)skb2->data; // Has, This should copy the MAC header
++
++	clean_skb = dev_alloc_skb(length_total + IEEE80211_ENCRYPT_HEADROOM + IEEE80211_ENCRYPT_TAILROOM); // To initialize and declare the skb
++	skb_reserve(clean_skb,  IEEE80211_ENCRYPT_HEADROOM); // To initialize and declare the skb (clean_skb that we are creating "2"
++
++
++	if (ieee80211_has_morefrags(hdr_clean_skb->frame_control))
++		printk(KERN_DEBUG "MOREDATA = 1\n");
++	else
++		printk(KERN_DEBUG "MOREDATA = 0\n");
++
++	sc = le16_to_cpu(hdr->seq_ctrl); // This is the Sequence control of the frame (inside MAC header).
++	seq_frag = sc & IEEE80211_SCTL_FRAG; // This is the fragment number of the frame, IEEE80211_SCTL_FRAG = 0x000F
++	seq_n = sc & IEEE80211_SCTL_SEQ; // This is the sequence number of the frame (inside the MAC header), IEEE80211_SCTL_SEQ = 0xFFF0
++
++	printk(KERN_DEBUG "Beginning of function, the seq_n is %d---\n", seq_n);
++
++	fc = cpu_to_le16(IEEE80211_FTYPE_DATA | IEEE80211_STYPE_DATA); // This to change the type and subtype in the MAC header Frame control
++	hdr_clean_skb->frame_control |= fc; // This should copy the new frame control (with type and subtype DATA).
++	printk(KERN_DEBUG "The addr1 is %pM---\n", hdr_clean_skb->addr1);
++	printk(KERN_DEBUG "The addr2 is %pM---\n", hdr_clean_skb->addr2);
++ 	printk(KERN_DEBUG "The addr3 is %pM---\n", hdr_clean_skb->addr3);
++	printk(KERN_DEBUG "The addr2 after changing is %pM---\n", hdr_clean_skb->addr2);
++
++	finish = 0;
++	printk(KERN_DEBUG "Test 1: SUPER-FRAME %d?, the total length of the superframe is: %d VERIFY!!, and the FLAG CFPOLL: %d?\n", i, skb2->len, k); // NEED to look for original code for i, k! skb2 is still the original superframe //pass2
++
++	pos = 0; // This is used to pass to the next control bit(cb)
++
++	do { // while the payload doesn't exceed 1500 bytes or EOD is not 1
++		memcpy(&cb, skb2->data + hdrlen + pos, sizeof(cb));//This is to copy the control bits which are 16 bits
++		cb = le16_to_cpu(cb); // This has solved the problem of litte endian
++		id = cb >> 12; // This is the ID of the station, If we convert into integer (int)id we get 0 or 1
++		eod = (cb << 4);
++		eod = (eod >> 15);
++		length = (cb << 5);
++		length = (length >> 5); //this is the data size in the control bit
++		increm++;
++		length_int = (int)length; // converting length u16 into int, this is the size in bytes of the payload
++
++		if ((int)id == User_ID)
++		{
++			memcpy(skb_put(clean_skb, length_int), skb2->data + hdrlen + pos + 2, length_int); // copy the data (payload in the skb2) // 2 is for the 2 bytes of the control bits (CB) created by us
++			new_ID = (int)id;
++			memcpy(&teste, skb2->data + hdrlen + pos + 2, sizeof(teste));
++			//printk(KERN_DEBUG "DATA: %s\n", byte_to_binary(teste));
++			if (eod)
++				done = 1;
++
++		} // if ((int)id == 0/1);
++
++		pos = pos + length_int + 2; // These 2 are for the control bit
++
++		if ((pos + hdrlen >= 1500) || eod)
++		{
++				finish = 1;
++		}
++
++	} while (!finish); // This is for the second do (line 3214)
++	//} while (skb2 = skb2->next); // This is for the first do (line 3191) //pass1 // NO NEED FOR THIS!!!!!!!!!
++	if (done && (new_ID == User_ID)) {
++		printk(" FOUND EOF FLAG\n");
++		hdr_clean_skb->frame_control &= ~morefrags;
++	}
++
++	if (ieee80211_has_morefrags(hdr_clean_skb->frame_control) && seq_frag == 0) {
++		memcpy(hdr_clean_skb->addr1, clean_skb->data, ETH_ALEN);
++		memcpy(hdr_clean_skb->addr3, clean_skb->data + ETH_ALEN, ETH_ALEN);
++		memcpy(&local->addrDest, clean_skb->data, ETH_ALEN);
++		memcpy(&local->addrSrc, clean_skb->data + ETH_ALEN, ETH_ALEN);
++		local->seq_n = seq_n;
++		//printk(KERN_DEBUG "The addrDest is %pM---\n", local->addrDest);
++		//printk(KERN_DEBUG "The addrSrc is %pM---\n", local->addrSrc);
++		printk(KERN_DEBUG "Morefrags\n");
++	}
++	else {
++		if (ieee80211_has_morefrags(hdr_clean_skb->frame_control)) {
++			memcpy(hdr_clean_skb->addr1, local->addrDest, ETH_ALEN);
++			memcpy(hdr_clean_skb->addr3, local->addrSrc, ETH_ALEN);
++			printk(KERN_DEBUG "Morefrags, seq = 0\n");
++		} else {
++			if (seq_frag == 0) {
++				memcpy(hdr_clean_skb->addr1, clean_skb->data, ETH_ALEN);
++				memcpy(hdr_clean_skb->addr3, clean_skb->data + ETH_ALEN, ETH_ALEN);
++				printk(KERN_DEBUG "frag == 0\n");
++			}
++			else {
++				if (seq_n == local->seq_n) {
++					memcpy(hdr_clean_skb->addr1, local->addrDest, ETH_ALEN);
++					memcpy(hdr_clean_skb->addr3, local->addrSrc, ETH_ALEN);
++					memset(&local->addrDest, 0, ETH_ALEN);
++					memset(&local->addrSrc, 0, ETH_ALEN);
++					local->seq_n = -1;
++					printk(KERN_DEBUG "frag != 0\n");
++				}
++			}
++		}
++	}
++	printk(KERN_DEBUG "The addr1 is %pM---\n", hdr_clean_skb->addr1);
++	printk(KERN_DEBUG "The addr2 is %pM---\n", hdr_clean_skb->addr2);
++ 	printk(KERN_DEBUG "The addr3 is %pM---\n", hdr_clean_skb->addr3);
++
++ 	if (seq_frag == 0) {
++ 		skb_pull(clean_skb, 12);// 2 x ETH_ALEN
++ 	}
++
++	memcpy(skb_push(clean_skb, hdrlen), hdr_clean_skb, hdrlen); //This is to copy the MAC header at the beginning of clean_skb. //pass2 please note, that skb_push has been used here to push the data in front and the MAC header at the beginning of the socket buffer. //
++
++	printk(KERN_DEBUG "Test3: End of function teste_skb, The lenght of the clean_skb (including the header) is %d---\n", clean_skb->len);
++	if (new_ID==User_ID)
++	{
++		printk(KERN_DEBUG "Test3: End of function teste_skb, inside ID == new_ID = %d", new_ID);
++		return clean_skb;
++	}
++	else
++	{
++		return 0;
++	}
++
++} //End of the function teste_skb
++
++void read_superframe_fragments(struct ieee80211_local *local, struct sk_buff *mixedskb)
++{
++	struct ieee80211_hdr *hdr = NULL; //the structure that will be used to modify MAC header fields
++	int hdrlen = 0;
++	u16 cb, sc;
++	u16 id, eod;
++	u16 length;
++	int pos = 0, seq_n = 0, seq_frag = 0, durationId = 0;
++
++	printk (KERN_DEBUG "**!!!!!1st Step - Start Reading NOW CB of a Superframe which has a total length (including the header) of: %d -------------\n", mixedskb->len);
++
++	hdr = (struct ieee80211_hdr *)mixedskb->data; // This access to the header of the data
++	hdrlen = ieee80211_hdrlen(hdr->frame_control); // This gives back the lenght of the header which is in this case 24 bytes (there is no address 4
++
++	sc = le16_to_cpu(hdr->seq_ctrl); // This is the Sequence control of the frame (inside MAC header). This has solved finally the problem for inverting the bytes??
++
++	seq_n = sc & IEEE80211_SCTL_SEQ; // This is the sequence number of the frame (inside the MAC header)
++	printk(KERN_DEBUG "Sequence Number of the Sequence Control inside the MAC header: %d\n", seq_n); // This printout the sequence number
++
++	seq_frag = sc & IEEE80211_SCTL_FRAG; // This is the fragment number of the frame
++	printk(KERN_DEBUG "Fragment number of the sequence control inside the MAC header: %d\n", seq_frag); // This printout the Fragment number (fragment 0 and 1??)  ??
++	if (seq_frag == 1)
++	{
++	    printk(KERN_DEBUG "ATTENTION: We are inside the second FRAGMENT");
++	}
++
++	durationId = hdr->duration_id;
++	printk(KERN_DEBUG "Duration ID inside the MAC header: %d\n", durationId);
++
++	memcpy(&cb, mixedskb->data + hdrlen + pos, sizeof(cb)); // Position starts with Zero, defined before
++	cb = le16_to_cpu(cb); // This has solved finally the problem for inverting the bytes??
++	printk(KERN_DEBUG "The first 2 bytes of CB STA0: %s\n", byte_to_binary_rx(cb));
++	id = cb >> 12;
++	eod = (cb << 4);
++	eod = (eod >> 15);
++	length = (cb << 5);
++	length = (length >> 5);
++	printk(KERN_DEBUG "CB: %d ID: %d EOD: %d Length: %d", cb, id, eod, length);
++
++	// printing the first 2 bytes of DATA for the second user!
++	memcpy(&cb, mixedskb->data + hdrlen + pos + 2, sizeof(cb)); // Here, we are only reading the first 2 bytes (SIZEOF(CB)).
++
++}
+diff -rupN compat-wireless-2011-11-15-original/net/mac80211/uloop-esm-rx.h compat-wireless-2011-11-15/net/mac80211/uloop-esm-rx.h
+--- compat-wireless-2011-11-15-original/net/mac80211/uloop-esm-rx.h	1970-01-01 01:00:00.000000000 +0100
++++ compat-wireless-2011-11-15/net/mac80211/uloop-esm-rx.h	2013-07-31 14:32:30.249911227 +0100
+@@ -0,0 +1,31 @@
++
++/*
++ ============================================================================
++ Name        : uloop-esm-rx.h
++ Author      : Luis Lopes (SITILABS, ULHT), Hassan Osman (UniK)
++ Version     : 4.0.0
++ Copyright   : ULOOP 2013
++ Description : Global headers for Elastic Spectrum Manager (Station Mode),
++  	  	  	   task 3.2 / prototype version 4.0.0
++ Date		 : June 2013
++ ============================================================================
++ */
++
++#include <linux/kernel.h>
++#include <linux/netdevice.h>
++#include <linux/skbuff.h>
++#include <net/mac80211.h>
++#include <linux/netlink.h>
++#include <net/sock.h>
++
++#include "ieee80211_i.h"
++#include "driver-ops.h"
++
++/*
++ * Netlink interface
++ */
++
++#define NETLINK_RM_CRYPTO 23 // Internal interface which will inform ESM if the request was accepted. (STA mode only)
++
++struct  sk_buff *defrag_sf_uloop(struct ieee80211_local *local, struct sk_buff *skb2);
++void read_superframe_fragments(struct ieee80211_local *local, struct sk_buff *mixedskb);
+diff -rupN compat-wireless-2011-11-15-original/net/mac80211/wme.c compat-wireless-2011-11-15/net/mac80211/wme.c
+--- compat-wireless-2011-11-15-original/net/mac80211/wme.c	2011-11-17 13:56:17.000000000 +0000
++++ compat-wireless-2011-11-15/net/mac80211/wme.c	2013-01-15 14:19:06.000000000 +0000
+@@ -61,6 +61,10 @@ u16 ieee80211_select_queue(struct ieee80
+ 	struct sta_info *sta = NULL;
+ 	const u8 *ra = NULL;
+ 	bool qos = false;
++	int msg_debug = 0;
++
++	if (msg_debug)
++		printk(KERN_DEBUG "%s: Function: ieee80211_select_queue\n", sdata->dev->name); //LUIS
+ 
+ 	if (local->hw.queues < 4 || skb->len < 6) {
+ 		skb->priority = 0; /* required for correct WPA/11i MIC */
+@@ -98,20 +102,33 @@ u16 ieee80211_select_queue(struct ieee80
+ 
+ 	if (!sta && ra && !is_multicast_ether_addr(ra)) {
+ 		sta = sta_info_get(sdata, ra);
+-		if (sta)
++		if (sta) {
+ 			qos = test_sta_flag(sta, WLAN_STA_WME);
++			if (msg_debug)
++				printk(KERN_DEBUG "%s: IEEE80211_SELECT_QUEUE: Reading QOS flag. \n", sdata->dev->name); //LUIS
++		}
+ 	}
+ 	rcu_read_unlock();
+-
++	if (qos) {
++		if (msg_debug)
++			printk(KERN_DEBUG "%s: IEEE80211_SELECT_QUEUE: Setting QOS=FALSE!\n", sdata->dev->name);
++		qos = false; // LUIS
++	}
+ 	if (!qos) {
+ 		skb->priority = 0; /* required for correct WPA/11i MIC */
++		if (msg_debug)
++			printk(KERN_DEBUG "%s: IEEE80211_SELECT_QUEUE: NO QOS -> Queue selected: AC_BE; skb->priority=%d \n", sdata->dev->name, skb->priority); //LUIS
+ 		return IEEE80211_AC_BE;
++	} else {
++		if (msg_debug)
++			printk(KERN_DEBUG "%s: IEEE80211_SELECT_QUEUE: YES QOS \n", sdata->dev->name); //LUIS
+ 	}
+ 
+ 	/* use the data classifier to determine what 802.1d tag the
+ 	 * data frame has */
+ 	skb->priority = cfg80211_classify8021d(skb);
+-
++	if (msg_debug)
++		printk(KERN_DEBUG "%s: (YES QOS) skb->priority=%d\n", sdata->dev->name, skb->priority); //LUIS
+ 	return ieee80211_downgrade_queue(local, skb);
+ }
+ 
+@@ -131,6 +148,8 @@ u16 ieee80211_downgrade_queue(struct iee
+ 		}
+ 	}
+ 
++	printk(KERN_DEBUG " ieee80211_downgrade_queue: (YES QOS) -> NEW skb->priority=%d \n", skb->priority);
++	printk(KERN_DEBUG " ieee80211_downgrade_queue: (YES QOS) -> Access class= %d \n", ieee802_1d_to_ac[skb->priority]);
+ 	/* look up which queue to use for frames with this 1d tag */
+ 	return ieee802_1d_to_ac[skb->priority];
+ }
+@@ -138,6 +157,8 @@ u16 ieee80211_downgrade_queue(struct iee
+ void ieee80211_set_qos_hdr(struct ieee80211_sub_if_data *sdata,
+ 			   struct sk_buff *skb)
+ {
++	int msg_debug = 0;
++
+ 	struct ieee80211_hdr *hdr = (void *)skb->data;
+ 
+ 	/* Fill in the QoS header if there is one. */
+@@ -145,6 +166,9 @@ void ieee80211_set_qos_hdr(struct ieee80
+ 		u8 *p = ieee80211_get_qos_ctl(hdr);
+ 		u8 ack_policy, tid;
+ 
++		if (msg_debug)
++			printk(KERN_DEBUG "%s: SET_QOS_HDR->The data need qos header\n", sdata->dev->name);
++
+ 		tid = skb->priority & IEEE80211_QOS_CTL_TAG1D_MASK;
+ 
+ 		/* preserve EOSP bit */
+@@ -157,5 +181,8 @@ void ieee80211_set_qos_hdr(struct ieee80
+ 		*p++ = ack_policy | tid;
+ 		*p = ieee80211_vif_is_mesh(&sdata->vif) ?
+ 			(IEEE80211_QOS_CTL_MESH_CONTROL_PRESENT >> 8) : 0;
++	}else {
++		if (msg_debug)
++			printk(KERN_DEBUG "%s: XMIT->The data don't need qos header\n", sdata->dev->name);
+ 	}
+ }
